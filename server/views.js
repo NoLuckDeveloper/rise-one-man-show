@@ -89,6 +89,7 @@ function landingPage(flash) {
     <p class="price"><strong>$10.99/month</strong> per company · 7-day free trial · cancel anytime</p>
     <div class="cta-row">
       <a class="btn primary" href="/signup">Start free trial</a>
+      <a class="btn" href="/demo.html">Try the demo</a>
       <a class="btn" href="/login">Log in</a>
     </div>
   </section>`;
