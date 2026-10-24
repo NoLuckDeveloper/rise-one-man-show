@@ -79,6 +79,14 @@ ${print ? '' : '<footer class="site-footer"><a href="/terms.html">Terms of Servi
 </body></html>`;
 }
 
+// Shared plan presentation. tierRows is a tiers.js TIERS array (or subset).
+function tierTableHtml(tierRows) {
+  return `<table class="inv-table">
+    <tr><th>Plan</th><th>Users</th><th class="r">Monthly</th><th class="r">Per user</th></tr>
+    ${tierRows.map((t) => `<tr><td><strong>${esc(t.label)}</strong></td><td>${t.seats === 1 ? '1 user' : `Up to ${t.seats} users`}</td><td class="r">${money(t.monthlyCents)}</td><td class="r">${money(Math.round(t.monthlyCents / t.seats))}</td></tr>`).join('')}
+  </table>`;
+}
+
 function landingPage(flash) {
   const body = `
   <section class="hero">
@@ -86,7 +94,8 @@ function landingPage(flash) {
     <p>New call comes in. Book it. Drive it. Fix it. Invoice it. Field management
        software for solo and small field-service businesses — scheduling, job
        reports, invoicing, mileage and hours in one place.</p>
-    <p class="price"><strong>$10.99/month</strong> per company · 7-day free trial · cancel anytime</p>
+    <p class="price">7-day free trial on any plan · upgrade anytime, prorated · cancel anytime</p>
+    ${tierTableHtml(billing.tiers.TIERS)}
     <div class="cta-row">
       <a class="btn primary" href="/signup">Start free trial</a>
       <a class="btn" href="/demo.html">Try the demo</a>
@@ -111,16 +120,22 @@ function loginPage(flash) {
   return layout({ title: 'Log in', flash, body });
 }
 
-function signupPage(flash) {
+function signupPage(flash, tiersList) {
+  const tiers = tiersList && tiersList.length ? tiersList : billing.tiers.TIERS;
   const body = `
   <section class="card narrow">
     <h2>Create your company</h2>
-    <p class="muted">7-day free trial starts today. $10.99/month per company after that — add a card before the trial ends to keep the app unlocked.</p>
+    <p class="muted">7-day free trial starts today, on any plan. After that, your plan bills monthly — add a card before the trial ends to keep the app unlocked.</p>
     <form method="post" action="/signup">
       <label>Company name <input name="company_name" required></label>
       <label>Your name <input name="owner_name" required autocomplete="name"></label>
       <label>Email <input type="email" name="email" required autocomplete="email"></label>
       <label>Password <input type="password" name="password" required minlength="8" autocomplete="new-password"></label>
+      <fieldset><legend>Choose your plan</legend>
+        ${tiers.map((t, i) => `<label class="check"><input type="radio" name="plan_tier" value="${esc(t.id)}" ${i === 0 ? 'checked' : ''}>
+          <strong>${esc(t.label)}</strong> — ${money(t.monthlyCents)}/month (${t.seats === 1 ? '1 user' : `up to ${t.seats} users`}, ${money(Math.round(t.monthlyCents / t.seats))} per user)</label>`).join('')}
+      </fieldset>
+      <p class="muted">You can switch plans anytime from the Billing page — changes are prorated.</p>
       <button class="btn primary wide" type="submit">Create company &amp; start trial</button>
     </form>
   </section>`;
@@ -213,7 +228,7 @@ function schedulePage({ user, sub, company, flash, bucket, byDay, todayGas, toda
       <button class="btn" type="button" data-close>Cancel</button>
     </form>
   </div>
-  <a class="fab" href="/app/calls/new" title="New call">+</a>`;
+  <a class="fab" href="/app/calls/new" title="New call" aria-label="New call"></a>`;
   return layout({ title: 'Schedule', user, sub, company, flash, body });
 }
 
@@ -650,9 +665,12 @@ function settingsPage({ user, sub, company, flash, s }) {
   return layout({ title: 'Settings', user, sub, company, flash, body });
 }
 
-function usersPage({ user, sub, company, flash, users }) {
+function usersPage({ user, sub, company, flash, users, tier, seatUsed }) {
+  const t = tier || billing.tiers.tierById(company.plan_tier);
+  const used = seatUsed !== undefined ? seatUsed : users.filter((u) => u.active).length;
   const body = `
   <section class="card"><h2>Users — ${esc(company.name)}</h2>
+    <p>Seats: <strong>${used} of ${t.seats} used</strong> on the ${esc(t.label)} plan (${money(t.monthlyCents)}/month).${used >= t.seats ? ' <strong>Seat limit reached</strong> — an owner can upgrade the plan on the <a href="/app/billing">Billing page</a> to add more users.' : ''}</p>
     ${users.map((u) => `<div class="line"><strong>${esc(u.name)}</strong> · ${esc(u.email)} · <span class="tag">${esc(u.role)}</span> ${u.active ? '' : '<span class="tag warn">deactivated</span>'}
       ${u.id !== user.id ? `<form method="post" action="/app/users/${u.id}/toggle" class="inline"><button class="link">${u.active ? 'Deactivate' : 'Reactivate'}</button></form>
       <form method="post" action="/app/users/${u.id}/reset" class="inline"><input name="password" placeholder="New password" minlength="8" required> <button class="link">Reset password</button></form>` : ''}</div>`).join('')}
@@ -675,8 +693,18 @@ function usersPage({ user, sub, company, flash, users }) {
 
 // --- Billing ----------------------------------------------------------------------
 
-function billingPage({ user, sub, company, flash, events, checkoutState }) {
+function billingPage({ user, sub, company, flash, events, checkoutState, tier, seatUsed }) {
+  const t = tier || billing.tiers.tierById(company.plan_tier);
   const hasCard = !!sub.payment_last4;
+  const otherTiers = billing.tiers.TIERS.filter((x) => x.id !== t.id);
+  const planSwitch = `
+    <h3>Switch plan</h3>
+    <p class="muted">Upgrades and downgrades take effect immediately and are prorated by Stripe. You cannot switch to a plan with fewer seats than your current active user count — remove users first.</p>
+    ${otherTiers.map((x) => `<form method="post" action="/app/billing/plan-change" class="row-actions">
+      <span style="flex:1"><strong>${esc(x.label)}</strong> — ${money(x.monthlyCents)}/month (${x.seats === 1 ? '1 user' : `up to ${x.seats} users`}, ${money(Math.round(x.monthlyCents / x.seats))} per user)</span>
+      <input type="hidden" name="plan_tier" value="${esc(x.id)}">
+      <button class="btn small" type="submit">Switch to ${esc(x.label)}</button>
+    </form>`).join('')}`;
   let actions = '';
   if (!billing.TEST_MODE) {
     actions = `
@@ -703,13 +731,14 @@ function billingPage({ user, sub, company, flash, events, checkoutState }) {
     ${checkoutState === 'success' ? '<div class="flash ok">Checkout complete — thank you!</div>' : ''}
     ${checkoutState === 'cancel' ? '<div class="flash">Checkout canceled — no changes made.</div>' : ''}
     <table class="kv">
-      <tr><td>Plan</td><td><strong>$10.99/month</strong> per company (flat, not per user)</td></tr>
+      <tr><td>Plan</td><td><strong>${esc(t.label)}</strong> — ${money(t.monthlyCents)}/month (${t.seats === 1 ? '1 user' : `up to ${t.seats} users`}) · Seats used: <strong>${seatUsed !== undefined ? seatUsed : '—'} of ${t.seats}</strong></td></tr>
       <tr><td>Status</td><td><strong>${esc(sub.status)}</strong></td></tr>
       <tr><td>Trial</td><td>${isoDate(sub.trial_start)} → ${isoDate(sub.trial_end)}${sub.status === 'trialing' ? ` (${daysLeft(sub.trial_end)} days left)` : ''}</td></tr>
       ${sub.current_period_end ? `<tr><td>Current period ends</td><td>${isoDate(sub.current_period_end)}</td></tr>` : ''}
       <tr><td>Payment method</td><td>${hasCard ? `${esc(sub.payment_brand || 'Card')} •••• ${esc(sub.payment_last4)}` : 'None on file'}</td></tr>
     </table>
     ${actions}
+    ${planSwitch}
     <h3>Billing history</h3>
     ${events.length ? events.map((e) => `<div class="line">${new Date(e.created_at).toLocaleString()} — ${esc(e.type)}${e.detail ? ': ' + esc(e.detail) : ''}</div>`).join('') : '<p class="muted">No billing events yet.</p>'}
   </section>`;
@@ -723,7 +752,8 @@ function platformPage({ user, flash, companies, totals, demoId }) {
   <h2>Platform admin</h2>
   <section class="card">
     <p>Companies: <strong>${totals.companies}</strong> · Trialing: <strong>${totals.trialing}</strong> ·
-       Active: <strong>${totals.active}</strong> · Estimated MRR: <strong>${money(totals.active * 1099)}</strong></p>
+       Active: <strong>${totals.active}</strong> · Estimated MRR: <strong>${money(totals.mrrCents || 0)}</strong></p>
+    ${totals.breakdown ? `<p class="muted">By plan (trialing + active): ${totals.breakdown.map((b) => `${esc(b.tier.label)}: <strong>${b.count}</strong>`).join(' · ')}</p>` : ''}
   </section>
   ${companies.map((c) => `
   <section class="card">

@@ -240,7 +240,7 @@ app.post('/login', async (req, res) => {
   res.redirect(user.role === 'platform' ? '/platform' : '/app');
 });
 
-app.get('/signup', (req, res) => res.send(views.signupPage(flashFrom(req))));
+app.get('/signup', (req, res) => res.send(views.signupPage(flashFrom(req), billing.tiers.availableTiers(billing.TEST_MODE))));
 
 app.post('/signup', async (req, res) => {
   const companyName = String(req.body.company_name || '').trim();
@@ -252,8 +252,12 @@ app.post('/signup', async (req, res) => {
   }
   const existing = await db.one('SELECT id FROM users WHERE email = $1', [email]);
   if (existing) return back(res, '/signup', 'err', 'That email already has an account — log in instead.');
+  const tier = billing.tiers.tierById(req.body.plan_tier);
+  if (!billing.TEST_MODE && !billing.tiers.availableTiers(false).some((t) => t.id === tier.id)) {
+    return back(res, '/signup', 'err', `The ${tier.label} plan is not available yet — please pick another plan.`);
+  }
   const hash = await auth.hashPassword(password);
-  const company = await db.one('INSERT INTO companies (name) VALUES ($1) RETURNING *', [companyName]);
+  const company = await db.one('INSERT INTO companies (name, plan_tier) VALUES ($1, $2) RETURNING *', [companyName, tier.id]);
   const user = await db.one(
     'INSERT INTO users (company_id, name, email, password_hash, role) VALUES ($1,$2,$3,$4,$5) RETURNING *',
     [company.id, ownerName, email, hash, 'owner']
@@ -261,7 +265,7 @@ app.post('/signup', async (req, res) => {
   const trialEnd = new Date(Date.now() + 7 * 86400000);
   await db.q('INSERT INTO subscriptions (company_id, status, trial_end) VALUES ($1,$2,$3)', [company.id, 'trialing', trialEnd]);
   await db.q('INSERT INTO company_settings (company_id) VALUES ($1)', [company.id]);
-  await db.billingEvent(company.id, 'trial_started', '7-day free trial started at signup.');
+  await db.billingEvent(company.id, 'trial_started', `7-day free trial started at signup (${tier.label} plan).`);
   const token = await auth.createSession(user.id);
   res.setHeader('Set-Cookie', auth.sessionCookie(token));
   res.redirect('/app?msg=' + encodeURIComponent('Welcome! Your 7-day free trial has started.'));
@@ -956,15 +960,28 @@ app.post('/app/settings/connect/simulate', auth.requireRole('owner'), async (req
 });
 
 // --- Users --------------------------------------------------------------------------
+// Seat usage for the current company: tier from the company row, used =
+// active users (a deactivated user frees their seat).
+async function seatUsage(company) {
+  const tier = billing.tiers.tierById(company.plan_tier);
+  const used = await billing.countActiveUsers(company.id);
+  return { tier, used };
+}
+
 app.get('/app/users', auth.requireRole('owner', 'admin'), async (req, res) => {
   const users = await db.many('SELECT * FROM users WHERE company_id=$1 ORDER BY id', [req.companyId]);
-  res.send(views.usersPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), users }));
+  const seats = await seatUsage(req.company);
+  res.send(views.usersPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), users, tier: seats.tier, seatUsed: seats.used }));
 });
 app.post('/app/users', auth.requireRole('owner', 'admin'), async (req, res) => {
   const b = req.body;
   const email = String(b.email || '').trim().toLowerCase();
   const role = ['owner', 'admin', 'tech'].includes(b.role) ? b.role : 'tech';
   if (role === 'owner' && req.user.role !== 'owner') return back(res, '/app/users', 'err', 'Only an owner can add another owner.');
+  const seats = await seatUsage(req.company);
+  if (seats.used >= seats.tier.seats) {
+    return back(res, '/app/users', 'err', `Seat limit reached: your company is on the ${seats.tier.label} plan (${seats.used} of ${seats.tier.seats} seats used). Upgrade your plan on the Billing page to add more users.`);
+  }
   const existing = await db.one('SELECT id FROM users WHERE email=$1', [email]);
   if (existing) return back(res, '/app/users', 'err', 'That email is already in use.');
   const hash = await auth.hashPassword(b.password || '');
@@ -994,19 +1011,29 @@ app.post('/app/users/:id/reset', auth.requireRole('owner', 'admin'), loadCompany
 // --- Billing (owner only) --------------------------------------------------------------
 app.get('/app/billing', auth.requireRole('owner'), async (req, res) => {
   const events = await db.many('SELECT * FROM billing_events WHERE company_id=$1 ORDER BY id DESC LIMIT 50', [req.companyId]);
+  const seats = await seatUsage(req.company);
   res.send(views.billingPage({
     user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), events,
     checkoutState: req.query.checkout || null,
+    tier: seats.tier, seatUsed: seats.used,
   }));
 });
 app.post('/app/billing/checkout', auth.requireRole('owner'), async (req, res) => {
   if (billing.TEST_MODE) return back(res, '/app/billing', 'err', 'Billing is in TEST MODE — use the test payment form below.');
   try {
-    const url = await billing.createCheckoutSession(req.company, req.user);
+    const url = await billing.createCheckoutSession(req.company, req.user, req.company.plan_tier);
     res.redirect(url);
   } catch (e) {
     console.error('[billing] checkout failed', e.message);
-    back(res, '/app/billing', 'err', 'Could not start Stripe Checkout. Check the Stripe keys and price ID.');
+    back(res, '/app/billing', 'err', 'Could not start Stripe Checkout. Check the Stripe keys and price IDs.');
+  }
+});
+app.post('/app/billing/plan-change', auth.requireRole('owner'), async (req, res) => {
+  try {
+    const tier = await billing.changePlan(req.companyId, req.body.plan_tier);
+    res.redirect('/app/billing?msg=' + encodeURIComponent(`Plan switched to ${tier.label}.`));
+  } catch (e) {
+    back(res, '/app/billing', 'err', e.message);
   }
 });
 app.post('/app/billing/portal', auth.requireRole('owner'), async (req, res) => {
@@ -1057,6 +1084,8 @@ app.get('/platform', requirePlatform, async (req, res) => {
     companies: companies.length,
     trialing: companies.filter((c) => c.sub_status === 'trialing').length,
     active: companies.filter((c) => c.sub_status === 'active').length,
+    mrrCents: billing.tiers.computeMrr(companies),
+    breakdown: billing.tiers.tierBreakdown(companies),
   };
   const demo = await db.one("SELECT id FROM companies WHERE name = 'Demo Doors LLC' LIMIT 1");
   res.send(views.platformPage({ user: req.user, flash: flashFrom(req), companies, totals, demoId: demo ? demo.id : null }));

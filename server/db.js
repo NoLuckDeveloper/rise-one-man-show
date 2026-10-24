@@ -253,6 +253,14 @@ CREATE TABLE IF NOT EXISTS trip_positions (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_trip_positions_trip ON trip_positions(trip_id);
+
+-- Subscription tiers (solo | team3 | team6 | team10). Seat caps count
+-- total active users per company. ADD COLUMN ... DEFAULT fills existing
+-- rows with 'solo', which is correct: every pre-tier subscription was on
+-- the solo $10.99 price, so nothing changes for existing companies. The
+-- UPDATE is belt-and-braces for any row holding an unknown value.
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS plan_tier TEXT NOT NULL DEFAULT 'solo';
+UPDATE companies SET plan_tier = 'solo' WHERE plan_tier NOT IN ('solo', 'team3', 'team6', 'team10');
 `;
 
 async function migrate() {
