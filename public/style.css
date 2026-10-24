@@ -107,6 +107,7 @@ form.inline { display: inline; }
 
 .sheet { position: fixed; inset: 0; background: rgba(0,0,0,.6); padding: 20px 12px; overflow: auto; z-index: 40; }
 .sheet .card { max-width: 480px; margin: 30px auto; }
+.sheet .card.wide { max-width: 620px; }
 .thumb-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .thumb { width: 84px; height: 84px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
 .receipt { max-width: 220px; border-radius: 8px; margin-top: 6px; }
