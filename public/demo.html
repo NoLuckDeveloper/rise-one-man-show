@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Try the demo · Rise One Man Show</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0f172a; color: #f1f5f9; font-family: system-ui, -apple-system, sans-serif; }
+  a { color: #a78bfa; }
+  .wrap { max-width: 520px; margin: 0 auto; padding: 16px; }
+  header.brand { display: flex; align-items: center; gap: 10px; padding: 14px 16px; }
+  header.brand img { width: 40px; height: 40px; }
+  .wordmark { font-weight: 800; letter-spacing: 1px; font-size: 18px; }
+  .wordmark .brand-rise { color: #a78bfa; }
+  .wordmark span:last-child { display: block; color: #e2e8f0; font-weight: 600; font-size: 13px; letter-spacing: 2px; }
+  .demo-banner { background: #2a1650; border: 1px solid #7c3aed; border-radius: 10px; padding: 10px 14px; font-size: 14px; margin: 8px 0 16px; }
+  .demo-banner strong { color: #a78bfa; }
+  .card { background: #1e293b; border-radius: 14px; padding: 18px; margin-bottom: 14px; }
+  .card h2 { margin: 0 0 8px; font-size: 20px; }
+  .card p { color: #cbd5e1; line-height: 1.5; margin: 8px 0; }
+  .card label { display: block; color: #94a3b8; font-size: 13px; margin-top: 10px; }
+  .card .val { color: #f1f5f9; font-size: 16px; margin-top: 2px; }
+  .pill { display: inline-block; padding: 3px 12px; border-radius: 999px; font-size: 13px; font-weight: 700; }
+  .pill.sched { background: #ffedd5; color: #9a3412; }
+  .pill.travel { background: #dbeafe; color: #1e40af; }
+  .pill.job { background: #ede9fe; color: #2e1065; }
+  .pill.done { background: #dcfce7; color: #166534; }
+  .btn { display: inline-block; background: #334155; color: #fff; border: 0; border-radius: 10px; padding: 13px 20px; font-size: 16px; font-weight: 700; cursor: pointer; text-decoration: none; text-align: center; }
+  .btn.primary { background: #7c3aed; }
+  .btn.wide { display: block; width: 100%; margin-top: 12px; }
+  .btn-row { display: flex; gap: 10px; margin-top: 14px; }
+  .btn-row .btn { flex: 1; }
+  .step { display: none; }
+  .step.active { display: block; }
+  .dots { text-align: center; color: #64748b; font-size: 14px; margin: 4px 0 16px; letter-spacing: 3px; }
+  .dots .on { color: #a78bfa; }
+  .timer { font-size: 34px; font-weight: 800; margin: 8px 0; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid #334155; font-size: 15px; }
+  th { color: #94a3b8; font-size: 13px; }
+  .inv { background: #fff; color: #0f172a; border-radius: 14px; padding: 18px; }
+  .inv h2 { margin: 0 0 4px; }
+  .inv p { margin: 4px 0; color: #334155; }
+  .inv table th, .inv table td { border-bottom: 1px solid #e2e8f0; }
+  .inv .total { background: #7c3aed; color: #fff; border-radius: 10px; padding: 12px 14px; margin-top: 12px; font-size: 18px; font-weight: 800; display: flex; justify-content: space-between; }
+  footer { text-align: center; color: #64748b; font-size: 13px; padding: 18px 0 30px; }
+  footer a { color: #94a3b8; }
+</style>
+</head><body>
+<header class="brand">
+  <img src="/logo-mark.png" alt="Rise One Man Show">
+  <div class="wordmark"><span class="brand-rise">RISE</span> <span>ONE MAN SHOW</span></div>
+</header>
+<div class="wrap">
+  <div class="demo-banner"><strong>Interactive demo.</strong> Sample data only — nothing here is saved, and no signup is needed. This is the real workflow, start to finish.</div>
+  <div class="dots" id="dots"></div>
+
+  <!-- Step 1: intro / bucket -->
+  <section class="step active" data-step="1">
+    <div class="card">
+      <h2>1. A new call comes in</h2>
+      <p>Demo Doors LLC just got a call. It lands in the bucket, unscheduled:</p>
+      <p><strong>Sarah Miller — Garage door won't close</strong></p>
+      <p class="val">123 Oak St, Marble Falls, TX · (830) 555-0142</p>
+      <div class="btn-row"><button class="btn primary" onclick="go(2)">Put it on the schedule →</button></div>
+    </div>
+  </section>
+
+  <!-- Step 2: schedule -->
+  <section class="step" data-step="2">
+    <div class="card">
+      <h2>2. Book it</h2>
+      <p>Give the call a date and time. In the real app you pick from your calendar:</p>
+      <label>Date</label><div class="val">Today, October 24, 2026</div>
+      <label>Time</label><div class="val">2:00 PM</div>
+      <div class="btn-row">
+        <button class="btn" onclick="go(1)">← Back</button>
+        <button class="btn primary" onclick="go(3)">Schedule it →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Step 3: scheduled card -->
+  <section class="step" data-step="3">
+    <div class="card">
+      <h2>3. On the schedule</h2>
+      <p><span class="pill sched">Scheduled</span></p>
+      <p><strong>Sarah Miller — Garage door won't close</strong></p>
+      <p class="val">Today · 2:00 PM · 123 Oak St, Marble Falls, TX</p>
+      <div class="btn-row">
+        <button class="btn" onclick="go(2)">← Back</button>
+        <button class="btn primary" onclick="go(4)">Open job →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Step 4: travel + job -->
+  <section class="step" data-step="4">
+    <div class="card">
+      <h2>4. Drive it. Fix it.</h2>
+      <p id="runstate"><span class="pill sched">Scheduled</span></p>
+      <p><strong>Sarah Miller — Garage door won't close</strong></p>
+      <div class="timer" id="timer">00:00</div>
+      <p id="runhelp">Tap Start travel when you head out — miles track to this job.</p>
+      <div class="btn-row">
+        <button class="btn" onclick="go(3)">← Back</button>
+        <button class="btn primary" id="runbtn" onclick="advanceRun()">Start travel →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Step 5: report -->
+  <section class="step" data-step="5">
+    <div class="card">
+      <h2>5. The job report</h2>
+      <p>Filled in on site, with photos in the real app:</p>
+      <label>Asset</label><div class="val">Garage door opener · LiftMaster 8500W · Serial DEMO-1234</div>
+      <label>Location on site</label><div class="val">Garage</div>
+      <label>Work performed</label><div class="val">Replaced stripped gear assembly and both safety sensors. Tested open/close three times.</div>
+      <label>Parts used</label>
+      <table><tr><th>Qty</th><th>Description</th><th>Cost</th></tr>
+      <tr><td>1</td><td>Gear assembly</td><td>$35.00</td></tr>
+      <tr><td>1</td><td>Safety sensor pair</td><td>$10.00</td></tr></table>
+      <div class="btn-row">
+        <button class="btn" onclick="go(4)">← Back</button>
+        <button class="btn primary" onclick="go(6)">Mark job done →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Step 6: invoice -->
+  <section class="step" data-step="6">
+    <div class="inv">
+      <h2>Invoice</h2>
+      <p>Demo Doors LLC · Sarah Miller · October 24, 2026</p>
+      <table><tr><th>Description</th><th>Amount</th></tr>
+      <tr><td>Labor — 2.00 hrs × $100.00/hr</td><td>$200.00</td></tr>
+      <tr><td>Parts — Gear assembly $35.00, Safety sensor pair $10.00</td><td>$45.00</td></tr>
+      <tr><td>Subtotal</td><td>$245.00</td></tr>
+      <tr><td>Tax (10%)</td><td>$24.50</td></tr></table>
+      <div class="total"><span>Total due</span><span>$269.50</span></div>
+      <p>In the real app this invoice can be emailed to the customer with a Pay link, or marked paid by cash, check, Venmo or PayPal.</p>
+    </div>
+    <div class="btn-row">
+      <button class="btn" onclick="go(5)">← Back</button>
+      <button class="btn primary" onclick="go(7)">Finish →</button>
+    </div>
+  </section>
+
+  <!-- Step 7: finish -->
+  <section class="step" data-step="7">
+    <div class="card">
+      <h2>That's the whole job.</h2>
+      <p>Call comes in. Book it. Drive it. Fix it. Invoice it. — from your phone, in one app. Hours, miles, reports, customers and invoices all live under the same job.</p>
+      <p><span class="pill done">✓ Job complete</span> · Invoice $269.50 ready to send.</p>
+      <a class="btn primary wide" href="/signup">Start free trial — 7 days free</a>
+      <a class="btn wide" href="/">Back to home</a>
+      <div class="btn-row"><button class="btn" onclick="go(1)">↩ Replay the demo</button></div>
+    </div>
+  </section>
+
+  <footer><a href="/terms.html">Terms of Service</a> · <a href="/privacy.html">Privacy Policy</a></footer>
+</div>
+<script>
+  var current = 1, timerInt = null, secs = 0, runPhase = 0;
+  function renderDots() {
+    var d = document.getElementById('dots'), html = '';
+    for (var i = 1; i <= 7; i++) html += '<span class="' + (i === current ? 'on' : '') + '">●</span>';
+    d.innerHTML = html;
+  }
+  function go(n) {
+    document.querySelector('.step.active').classList.remove('active');
+    document.querySelector('.step[data-step="' + n + '"]').classList.add('active');
+    current = n; renderDots(); window.scrollTo(0, 0);
+  }
+  function advanceRun() {
+    var state = document.getElementById('runstate'),
+        help = document.getElementById('runhelp'),
+        btn = document.getElementById('runbtn');
+    if (runPhase === 0) {
+      state.innerHTML = '<span class="pill travel">Traveling</span>';
+      help.textContent = 'Traveling to the job — miles are tracking. Tap Start job when you arrive.';
+      btn.textContent = 'Start job →'; runPhase = 1;
+    } else if (runPhase === 1) {
+      state.innerHTML = '<span class="pill job">On the job</span>';
+      help.textContent = 'On the clock under this job. The timer runs until you end the job.';
+      btn.textContent = 'Fill out the report →'; runPhase = 2;
+      timerInt = setInterval(function () {
+        secs++;
+        var m = String(Math.floor(secs / 60)).padStart(2, '0'),
+            s = String(secs % 60).padStart(2, '0');
+        document.getElementById('timer').textContent = m + ':' + s;
+      }, 1000);
+    } else {
+      if (timerInt) clearInterval(timerInt);
+      go(5);
+    }
+  }
+  renderDots();
+</script>
+</body></html>
