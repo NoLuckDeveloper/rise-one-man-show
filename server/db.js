@@ -239,6 +239,20 @@ ON CONFLICT (company_id, customer_name) DO NOTHING;
 -- (no platform Stripe keys) a simulated acct_test_* id is stored instead.
 ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS stripe_account_id TEXT;
 ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS stripe_charges_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Native-app GPS positions for open travel trips (background tracking).
+-- One row per fix; trip miles accumulate from consecutive points server-side.
+CREATE TABLE IF NOT EXISTS trip_positions (
+  id          SERIAL PRIMARY KEY,
+  trip_id     INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+  company_id  INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  lat         DOUBLE PRECISION NOT NULL,
+  lng         DOUBLE PRECISION NOT NULL,
+  accuracy_m  DOUBLE PRECISION,
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_trip_positions_trip ON trip_positions(trip_id);
 `;
 
 async function migrate() {

@@ -7,7 +7,7 @@ const billing = require('./billing');
 const payments = require('./payments');
 const mailer = require('./mailer');
 const views = require('./views');
-const { esc, dollarsToCents, hoursBetween, computeInvoice, isoDate, buildReportCsv } = require('./util');
+const { esc, dollarsToCents, hoursBetween, computeInvoice, isoDate, buildReportCsv, haversineMiles } = require('./util');
 
 const app = express();
 
@@ -398,13 +398,51 @@ app.post('/app/calls/:id/cancel-travel', loadCall, async (req, res) => {
 
 app.post('/app/calls/:id/start-job', loadCall, async (req, res) => {
   const miles = parseFloat(req.body.miles || req.body.miles_manual || '0') || 0;
-  await db.q('UPDATE trips SET miles=$1, ended_at=now() WHERE company_id=$2 AND call_id=$3 AND ended_at IS NULL',
+  // A zero/empty submission keeps server-accumulated miles: the native app's
+  // foreground service posts trip miles live, so its start-job form carries no
+  // miles value. In the browser flow trips.miles is 0 until this point, so the
+  // CASE changes nothing there; a submitted value (web GPS or typed miles)
+  // still wins, preserving the manual-override behavior.
+  await db.q(`UPDATE trips SET miles = CASE WHEN $1 > 0 THEN $1 ELSE miles END, ended_at=now()
+    WHERE company_id=$2 AND call_id=$3 AND ended_at IS NULL`,
     [miles, req.companyId, req.call.id]);
   await db.q("UPDATE calls SET status='on_job' WHERE id=$1 AND company_id=$2", [req.call.id, req.companyId]);
   const label = `${req.call.customer_name} — ${req.call.description || 'Job'}`;
   await db.q('INSERT INTO punches (company_id, call_id, user_id, job_label) VALUES ($1,$2,$3,$4)',
     [req.companyId, req.call.id, req.user.id, label]);
   res.redirect(`/app/calls/${req.call.id}/report`);
+});
+
+// Native app: live GPS positions during an open travel trip. The Android app
+// posts each fix as it arrives, authenticated by the same session as the
+// browser, so app and browser share one live record. The server resolves the
+// company's open trip for the call, stores the point, and adds the segment
+// miles using the same 0.005 mi jitter threshold as the web GPS. 404 = no open
+// trip (the native service stops). Company scoping comes from the /app mount,
+// so a company can only ever touch its own trips.
+app.post('/app/native-positions', async (req, res) => {
+  const b = req.body || {};
+  const callId = parseInt(b.call_id, 10);
+  const lat = Number(b.lat);
+  const lng = Number(b.lng);
+  if (!callId || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return res.status(400).json({ error: 'call_id, lat and lng are required' });
+  }
+  const trip = await db.one('SELECT * FROM trips WHERE company_id=$1 AND call_id=$2 AND ended_at IS NULL ORDER BY id DESC LIMIT 1', [req.companyId, callId]);
+  if (!trip) return res.status(404).json({ error: 'no open trip' });
+  const last = await db.one('SELECT lat, lng FROM trip_positions WHERE trip_id=$1 ORDER BY id DESC LIMIT 1', [trip.id]);
+  await db.q('INSERT INTO trip_positions (trip_id, company_id, lat, lng, accuracy_m, recorded_at) VALUES ($1,$2,$3,$4,$5,$6)',
+    [trip.id, req.companyId, lat, lng, Number.isFinite(Number(b.accuracy_m)) ? Number(b.accuracy_m) : null, b.recorded_at ? new Date(b.recorded_at) : new Date()]);
+  let added = 0;
+  if (last) {
+    const d = haversineMiles(Number(last.lat), Number(last.lng), lat, lng);
+    if (d > 0.005) {
+      added = d;
+      const total = Math.round((Number(trip.miles || 0) + d) * 100) / 100;
+      await db.q('UPDATE trips SET miles=$1 WHERE id=$2', [total, trip.id]);
+    }
+  }
+  return res.json({ ok: true, trip_id: trip.id, added_miles: added });
 });
 
 app.post('/app/calls/:id/end-call', loadCall, async (req, res) => {
