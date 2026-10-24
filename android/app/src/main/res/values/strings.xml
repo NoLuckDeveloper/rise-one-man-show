@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Rise One Man Show</string>
+    <string name="tracking_notification_text">Tap Stop to end tracking.</string>
+    <string name="location_denied">Location permission is needed to track trip miles.</string>
+    <string name="background_declined">Background location declined — trips will only track while the app is open.</string>
+    <string name="disclosure_title">Background location</string>
+    <string name="disclosure_message">Rise One Man Show uses your location only while a trip is active, to record trip miles for your jobs — including when the app is in the background or your phone is locked. Tracking stops as soon as the trip ends, and location is never used at any other time.</string>
+    <string name="disclosure_allow">Allow</string>
+    <string name="disclosure_not_now">Not now</string>
+</resources>
