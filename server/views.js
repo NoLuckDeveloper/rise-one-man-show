@@ -53,6 +53,7 @@ function layout({ title, user, sub, company, flash, body, print }) {
 ${nav}
 ${subBanner(user, sub)}
 <main>${flashHtml(flash)}${body}</main>
+${print ? '' : '<footer class="site-footer"><a href="/terms.html">Terms of Service</a> · <a href="/privacy.html">Privacy Policy</a></footer>'}
 <script src="/app.js"></script>
 </body></html>`;
 }

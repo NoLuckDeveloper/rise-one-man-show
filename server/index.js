@@ -665,6 +665,11 @@ app.post('/platform/companies/:id/delete', requirePlatform, async (req, res) => 
 async function ensurePlatformAdmin() {
   const email = (process.env.PLATFORM_ADMIN_EMAIL || 'platform@rise.local').toLowerCase();
   const password = process.env.PLATFORM_ADMIN_PASSWORD || 'platform123';
+  // When a custom platform admin email is configured, remove the built-in
+  // default admin account so the starter credentials can never be used.
+  if (email !== 'platform@rise.local') {
+    await db.q("DELETE FROM users WHERE role='platform' AND email='platform@rise.local'");
+  }
   const existing = await db.one('SELECT id FROM users WHERE email=$1', [email]);
   if (!existing) {
     const hash = await auth.hashPassword(password);
