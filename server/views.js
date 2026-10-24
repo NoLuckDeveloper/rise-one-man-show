@@ -562,6 +562,7 @@ function logPage({ user, sub, company, flash, punches, trips, gas, maint, totals
     <select name="period">${periods.map((p, i) => `<option value="${i}" ${i === selectedPeriod ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select>
     <button class="btn small" type="submit">View</button>
     <button class="btn small" type="button" onclick="window.print()">Print report</button>
+    <a class="btn small" href="/app/log.csv?period=${selectedPeriod}">Export CSV</a>
   </form>
   <section class="card"><h3>${esc(periodLabel)} totals</h3>
     <p>Hours worked: <strong>${totals.hours.toFixed(2)}</strong> · Miles: <strong>${Number(totals.miles).toFixed(1)}</strong>

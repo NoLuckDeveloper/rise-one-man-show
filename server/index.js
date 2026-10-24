@@ -7,7 +7,7 @@ const billing = require('./billing');
 const payments = require('./payments');
 const mailer = require('./mailer');
 const views = require('./views');
-const { esc, dollarsToCents, hoursBetween, computeInvoice, isoDate } = require('./util');
+const { esc, dollarsToCents, hoursBetween, computeInvoice, isoDate, buildReportCsv } = require('./util');
 
 const app = express();
 
@@ -762,6 +762,36 @@ app.get('/app/log', async (req, res) => {
     user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req),
     punches, trips, gas, maint, totals, periodLabel: period.label, periods, selectedPeriod: selected,
   }));
+});
+
+// CSV export of the same report period, for a bookkeeper / QuickBooks import.
+app.get('/app/log.csv', async (req, res) => {
+  const cid = req.companyId;
+  const s = req.settings;
+  const periods = payPeriods(s);
+  const selected = Math.min(Math.max(parseInt(req.query.period || '0', 10) || 0, 0), periods.length - 1);
+  const period = periods[selected] || { start: new Date(0), end: new Date(), label: 'All time' };
+
+  const punches = await db.many('SELECT * FROM punches WHERE company_id=$1 AND clock_in >= $2 AND clock_in < $3 ORDER BY clock_in', [cid, period.start, period.end]);
+  const trips = await db.many('SELECT * FROM trips WHERE company_id=$1 AND started_at >= $2 AND started_at < $3 ORDER BY started_at', [cid, period.start, period.end]);
+  const gas = await db.many('SELECT * FROM gas_purchases WHERE company_id=$1 AND date >= $2::date AND date < $3::date ORDER BY date', [cid, isoDate(period.start), isoDate(period.end)]);
+  const maint = await db.many('SELECT * FROM maintenance_receipts WHERE company_id=$1 AND date >= $2::date AND date < $3::date ORDER BY date', [cid, isoDate(period.start), isoDate(period.end)]);
+  const callLabels = {};
+  const allCalls = await db.many('SELECT id, customer_name, description FROM calls WHERE company_id=$1', [cid]);
+  for (const c of allCalls) callLabels[c.id] = `${c.customer_name} — ${c.description || 'Job'}`;
+
+  const invoices = [];
+  const completed = await db.many("SELECT * FROM calls WHERE company_id=$1 AND status='completed' AND completed_at >= $2 AND completed_at < $3 ORDER BY completed_at", [cid, period.start, period.end]);
+  for (const c of completed) {
+    const found = await invoiceFor(c);
+    if (found) invoices.push({ date: isoDate(c.completed_at), job: `${c.customer_name} — ${c.description || 'Job'}`, totalCents: found.inv.totalCents, paid: c.payment_status === 'paid' });
+  }
+
+  const csv = buildReportCsv({ punches, trips, gas, maint, invoices, hourlyRateCents: s.hourly_rate_cents, callLabels });
+  const endLabel = isoDate(new Date(period.end.getTime() - 86400000));
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="rise-report-${isoDate(period.start)}-to-${endLabel}.csv"`);
+  res.send(csv);
 });
 
 app.post('/app/punches', async (req, res) => {
