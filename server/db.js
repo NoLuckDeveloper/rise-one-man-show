@@ -187,6 +187,58 @@ CREATE TABLE IF NOT EXISTS maintenance_receipts (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_maint_company ON maintenance_receipts(company_id);
+
+-- Invoice payments (Stripe Connect + manual) --------------------------------
+-- Invoices are derived from a call chain (see invoiceFor in index.js), so the
+-- payment state lives on the chain's ROOT call: payment_status / method /
+-- reference / paid_at, plus the unguessable pay_token used by the public
+-- /pay/:token page. customer_email is the invoice recipient, captured at
+-- intake and copied onto follow-up calls; the root call's value is the one
+-- the invoice uses.
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS customer_email TEXT;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS pay_token TEXT;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'unpaid';
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS payment_method TEXT;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS payment_reference TEXT;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS invoice_emailed_at TIMESTAMPTZ;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS invoice_email_recipient TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_calls_pay_token ON calls (pay_token) WHERE pay_token IS NOT NULL;
+
+-- Customer-level contact records ------------------------------------------
+-- Calls remain the operational record and customers are still presented by
+-- grouping calls, but this table is the durable customer-level email source.
+-- It is keyed exactly like the derived customer view: (company_id,
+-- customer_name). Backfill uses each customer's most recent non-empty email
+-- already captured on a call, without overwriting a customer record that is
+-- already present on a later boot.
+CREATE TABLE IF NOT EXISTS customers (
+  id            SERIAL PRIMARY KEY,
+  company_id    INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  customer_name TEXT NOT NULL,
+  email         TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (company_id, customer_name)
+);
+CREATE INDEX IF NOT EXISTS idx_customers_company ON customers(company_id);
+INSERT INTO customers (company_id, customer_name, email)
+SELECT company_id, customer_name, email
+  FROM (
+    SELECT DISTINCT ON (company_id, customer_name)
+           company_id,
+           customer_name,
+           LOWER(TRIM(customer_email)) AS email
+      FROM calls
+     WHERE customer_email IS NOT NULL AND TRIM(customer_email) <> ''
+     ORDER BY company_id, customer_name, id DESC
+  ) AS latest_customer_emails
+ON CONFLICT (company_id, customer_name) DO NOTHING;
+
+-- Per-company Stripe Connect account (invoice card payments). In TEST MODE
+-- (no platform Stripe keys) a simulated acct_test_* id is stored instead.
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS stripe_account_id TEXT;
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS stripe_charges_enabled BOOLEAN NOT NULL DEFAULT FALSE;
 `;
 
 async function migrate() {

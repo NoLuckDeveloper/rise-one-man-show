@@ -7,6 +7,25 @@ function flashHtml(flash) {
   return `<div class="flash ${flash.kind || ''}">${esc(flash.msg)}</div>`;
 }
 
+// payment_method values: 'card' (Stripe) or a manual label (Cash/Check/...).
+function payMethodLabel(method) {
+  if (!method) return '';
+  return method === 'card' ? 'Card' : method;
+}
+
+function paidStamp(call) {
+  if (!call || call.payment_status !== 'paid') return '';
+  const ref = call.payment_reference ? ` · Ref: ${esc(call.payment_reference)}` : '';
+  const when = call.paid_at ? ` · ${isoDate(call.paid_at)}` : '';
+  return `<p class="paid-stamp">✓ PAID — ${esc(payMethodLabel(call.payment_method))}${when}${ref}</p>`;
+}
+
+function invoiceEmailStamp(call) {
+  if (!call || !call.invoice_emailed_at) return '';
+  const recipient = call.invoice_email_recipient ? ` to ${esc(call.invoice_email_recipient)}` : '';
+  return `<p class="muted">✉ Emailed${recipient} on ${isoDate(call.invoice_emailed_at)}</p>`;
+}
+
 function subBanner(user, sub) {
   if (!user || user.role === 'platform' || !sub) return '';
   let testTag = billing.TEST_MODE ? ' <span class="tag">Billing: TEST MODE</span>' : '';
@@ -44,10 +63,12 @@ function layout({ title, user, sub, company, flash, body, print }) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · Rise One Man Show</title>
 <link rel="stylesheet" href="/style.css">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 </head><body class="${print ? 'print' : ''}">
 <header class="brand">
-  <div class="logo">🔧</div>
-  <div class="wordmark">RISE <span>ONE MAN SHOW</span></div>
+  <img class="logo-img" src="/logo-mark.png" alt="Rise One Man Show">
+  <div class="wordmark"><span class="brand-rise">RISE</span> <span>ONE MAN SHOW</span></div>
   ${company ? `<div class="company-name">${esc(company.name)}</div>` : ''}
 </header>
 ${nav}
@@ -205,6 +226,7 @@ function callFormPage({ user, sub, company, flash, call, prefill }) {
       <label>Customer name <input name="customer_name" required value="${esc(c.customer_name || '')}"></label>
       <label>Address <input name="address" value="${esc(c.address || '')}"></label>
       <label>Phone <input name="phone" value="${esc(c.phone || '')}"></label>
+      <label>Customer email (for invoicing) <input type="email" name="customer_email" value="${esc(c.customer_email || '')}"></label>
       <label>Point of contact <input name="poc_name" value="${esc(c.poc_name || '')}"></label>
       <label>POC phone <input name="poc_phone" value="${esc(c.poc_phone || '')}"></label>
       <label>Job description <textarea name="description" rows="3">${esc(c.description || '')}</textarea></label>
@@ -356,11 +378,47 @@ function reportPage({ user, sub, company, flash, call, report, chainHours, chain
 
 // --- Invoice -----------------------------------------------------------------
 
-function invoicePage({ user, sub, company, settings, rootCall, inv, print }) {
+function invoicePage({ user, sub, company, settings, rootCall, inv, print, payUrl, recipientEmail, canManage, resendConfigured }) {
+  const paid = rootCall.payment_status === 'paid';
+  let paymentBlock = '';
+  if (paid) {
+    paymentBlock = paidStamp(rootCall);
+  } else if (!print) {
+    const emailForm = canManage ? (recipientEmail
+      ? `<form method="post" action="/app/calls/${rootCall.id}/email-invoice" class="inline">
+           <button class="btn blue" type="submit">✉ Email invoice to ${esc(recipientEmail)}</button></form>
+         ${resendConfigured ? '' : '<p class="muted">Email sending is not configured on the server yet (needs RESEND_API_KEY) — sending will show a notice until it is.</p>'}`
+      : `<form method="post" action="/app/calls/${rootCall.id}/email-invoice" class="row-actions">
+           <input type="email" name="customer_email" placeholder="Customer email" required style="max-width:280px">
+           <button class="btn blue" type="submit">✉ Save email &amp; send invoice</button></form>`) : '';
+    const markPaidForm = canManage ? `
+      <form method="post" action="/app/calls/${rootCall.id}/mark-paid" class="mark-paid">
+        <fieldset><legend>Mark as paid (cash / check / Venmo / PayPal)</legend>
+          <div class="grid3">
+            <label>Method <select name="method">
+              <option>Cash</option><option>Check</option><option>Venmo</option><option>PayPal</option><option>Other</option>
+            </select></label>
+            <label>Reference (e.g. check #) <input name="reference"></label>
+            <label>Date <input type="date" name="paid_date" value="${isoDate(new Date())}"></label>
+          </div>
+          <button class="btn green" type="submit">✓ Mark as paid</button>
+        </fieldset>
+      </form>` : '';
+    paymentBlock = `
+    <div class="no-print payment-box">
+      <p><strong>Status:</strong> Unpaid</p>
+      ${payUrl ? `<p>Online pay link: <a href="${payUrl}">${esc(payUrl)}</a><br>
+      <span class="muted">Share it with the customer — they pay by card and the money goes to your connected Stripe account.</span></p>` : ''}
+      <div class="row-actions">${emailForm}</div>
+      ${markPaidForm}
+    </div>`;
+  } else {
+    paymentBlock = '<p><strong>Status:</strong> Unpaid</p>';
+  }
   const body = `
   <section class="invoice">
     <div class="inv-head">
-      <div><div class="logo">🔧</div><strong>RISE ONE MAN SHOW</strong></div>
+      <div><img class="logo-img" src="/logo-mark.png" alt="Rise One Man Show"><strong>RISE ONE MAN SHOW</strong></div>
       <div><h2>INVOICE</h2><p>${esc(company.name)}</p></div>
     </div>
     <p><strong>Bill to:</strong> ${esc(rootCall.customer_name)}<br>${esc(rootCall.address || '')}</p>
@@ -374,18 +432,62 @@ function invoicePage({ user, sub, company, settings, rootCall, inv, print }) {
       <tr class="total"><td>Total due</td><td class="r">${money(inv.totalCents)}</td></tr>
     </table>
     ${inv.multiplierApplied ? '<p class="muted">Parts billed at a markup over cost (parts multiplier applied).</p>' : ''}
+    ${invoiceEmailStamp(rootCall)}
+    ${paymentBlock}
     <div class="no-print row-actions"><a class="btn small" href="/app/completed">Back to completed</a></div>
   </section>`;
   return layout({ title: 'Invoice', user: print ? null : user, sub: print ? null : sub, company, body, print });
+}
+
+// --- Public invoice pay page (/pay/:token, no login) -------------------------
+
+function payPage({ company, rootCall, inv, settings, state, testMode, justPaid, flash }) {
+  let action = '';
+  if (state === 'paid') {
+    action = `${justPaid ? '<div class="flash ok">Payment received — thank you!</div>' : ''}${paidStamp(rootCall)}`;
+  } else if (state === 'pay') {
+    action = justPaid
+      ? '<div class="flash ok">Payment received — it can take a moment for the status to update here. You can close this page.</div>'
+      : (testMode
+        ? `<form method="post" action="/pay/${esc(rootCall.pay_token)}/simulate">
+             <button class="btn primary wide big" type="submit">Pay ${money(inv.totalCents)} (TEST MODE — simulated)</button></form>
+           <p class="muted">TEST MODE: no real card is charged; this simulates a successful card payment.</p>`
+        : `<form method="post" action="/pay/${esc(rootCall.pay_token)}/checkout">
+             <button class="btn primary wide big" type="submit">Pay ${money(inv.totalCents)}</button></form>
+           <p class="muted">Secure card payment processed by Stripe. The money goes directly to ${esc(company.name)}.</p>`);
+  } else {
+    action = `<p><strong>Online payment isn't available for this invoice yet.</strong><br>
+      Please contact ${esc(company.name)}${rootCall.phone ? ' at ' + esc(rootCall.phone) : ''} to arrange payment.</p>`;
+  }
+  const body = `
+  <section class="invoice">
+    <div class="inv-head">
+      <div><img class="logo-img" src="/logo-mark.png" alt="Rise One Man Show"><strong>RISE ONE MAN SHOW</strong></div>
+      <div><h2>INVOICE</h2><p>${esc(company.name)}</p></div>
+    </div>
+    <p><strong>Bill to:</strong> ${esc(rootCall.customer_name)}<br>${esc(rootCall.address || '')}</p>
+    <p><strong>Job:</strong> ${esc(rootCall.description || '')} · ${rootCall.completed_at ? isoDate(rootCall.completed_at) : ''}</p>
+    <table class="inv-table">
+      <tr><th>Description</th><th class="r">Amount</th></tr>
+      <tr><td>Labor — ${inv.hours.toFixed(2)} hrs × ${money(settings.hourly_rate_cents)}/hr</td><td class="r">${money(inv.laborCents)}</td></tr>
+      ${inv.partLines.map((l) => `<tr><td>Part: ${esc(l.description)} — ${l.qty} × ${money(l.costCents)}${inv.multiplierApplied ? ' (× multiplier)' : ''}</td><td class="r">${money(l.billedCents)}</td></tr>`).join('')}
+      <tr><td>Subtotal</td><td class="r">${money(inv.subtotalCents)}</td></tr>
+      <tr><td>Tax (${esc(settings.tax_percent)}%)</td><td class="r">${money(inv.taxCents)}</td></tr>
+      <tr class="total"><td>Total due</td><td class="r">${money(inv.totalCents)}</td></tr>
+    </table>
+    ${action}
+    <p class="muted" style="text-align:center;margin-top:18px">Powered by Rise One Man Show</p>
+  </section>`;
+  return layout({ title: 'Pay invoice', flash, body });
 }
 
 // --- Completed / Customers ---------------------------------------------------
 
 function completedPage({ user, sub, company, flash, rows }) {
   const body = `<h2>Completed</h2>` + (rows.length
-    ? rows.map(({ call, hasInvoice }) => `
+    ? rows.map(({ call, hasInvoice, paid, payMethod }) => `
       <div class="card call-card">
-        <div class="call-head"><strong>${esc(call.customer_name)}</strong> ${statusPill(call)}</div>
+        <div class="call-head"><strong>${esc(call.customer_name)}</strong> ${statusPill(call)}${paid ? ` <span class="pill paid">✓ Paid${payMethod ? ' · ' + esc(payMethodLabel(payMethod)) : ''}</span>` : ''}</div>
         <div class="call-desc">${esc(call.description || '')}</div>
         <div class="muted">Completed ${call.completed_at ? new Date(call.completed_at).toLocaleDateString() : ''}</div>
         <div class="row-actions spread">
@@ -401,11 +503,25 @@ function completedPage({ user, sub, company, flash, rows }) {
   return layout({ title: 'Completed', user, sub, company, flash, body });
 }
 
-function customersPage({ user, sub, company, flash, customers, q }) {
+function customerEmailBlock({ name, email, from, canEdit }) {
+  const action = `/app/customers/${encodeURIComponent(name)}/email`;
+  if (!canEdit) {
+    return email ? `<div>✉ <a href="mailto:${esc(email)}">${esc(email)}</a></div>` : '<div class="muted">✉ No email on file</div>';
+  }
+  return `<form method="post" action="${action}" class="row-actions">
+    <label style="flex:1;min-width:220px">Customer email
+      <input type="email" name="email" value="${esc(email || '')}" placeholder="customer@example.com">
+    </label>
+    <input type="hidden" name="from" value="${esc(from)}">
+    <button class="btn small" type="submit">Save email</button>
+  </form>`;
+}
+
+function customersPage({ user, sub, company, flash, customers, q, canEditCustomerEmail }) {
   const body = `
   <h2>Customers</h2>
   <form method="get" action="/app/customers" class="row-actions">
-    <input name="q" placeholder="Search name, address, phone…" value="${esc(q || '')}">
+    <input name="q" placeholder="Search name, address, phone, email…" value="${esc(q || '')}">
     <button class="btn small" type="submit">Search</button>
   </form>` + (customers.length
     ? customers.map((c) => `
@@ -414,6 +530,7 @@ function customersPage({ user, sub, company, flash, customers, q }) {
           <span class="muted">${c.call_count} call${c.call_count === 1 ? '' : 's'}</span></div>
         <div>${esc(c.address || '')}</div>
         <div class="muted">${esc(c.phone || '')}</div>
+        ${customerEmailBlock({ name: c.customer_name, email: c.email, from: 'list', canEdit: canEditCustomerEmail })}
         <div class="row-actions">
           <a class="btn small" href="/app/customers/${encodeURIComponent(c.customer_name)}">Site history</a>
           <a class="btn small teal" href="/app/calls/new?customer=${encodeURIComponent(c.customer_name)}">+ New call</a>
@@ -423,8 +540,12 @@ function customersPage({ user, sub, company, flash, customers, q }) {
   return layout({ title: 'Customers', user, sub, company, flash, body });
 }
 
-function customerDetailPage({ user, sub, company, flash, name, calls }) {
+function customerDetailPage({ user, sub, company, flash, name, calls, customer, canEditCustomerEmail }) {
   const body = `<h2>${esc(name)}</h2>
+  <section class="card">
+    <h3>Customer contact</h3>
+    ${customerEmailBlock({ name, email: customer ? customer.email : '', from: 'detail', canEdit: canEditCustomerEmail })}
+  </section>
   <div class="row-actions"><a class="btn teal" href="/app/calls/new?customer=${encodeURIComponent(name)}">+ New call for this customer</a></div>` +
     calls.map((c) => callCard(c)).join('');
   return layout({ title: name, user, sub, company, flash, body });
@@ -481,6 +602,29 @@ function logPage({ user, sub, company, flash, punches, trips, gas, maint, totals
 // --- Settings / Users -----------------------------------------------------------
 
 function settingsPage({ user, sub, company, flash, s }) {
+  let connectSection = '';
+  if (user.role === 'owner') {
+    let inner = '';
+    if (billing.TEST_MODE) {
+      inner = s.stripe_charges_enabled
+        ? `<p>✓ <strong>Connected (simulated).</strong> Invoice pay links show a simulated card payment — no real charges are possible in TEST MODE.</p>`
+        : `<p class="muted">TEST MODE is on (no platform Stripe keys), so Connect can't go live — simulate it to try the invoice pay-link flow end to end.</p>
+           <form method="post" action="/app/settings/connect/simulate"><button class="btn teal" type="submit">Simulate Connect setup</button></form>`;
+    } else if (!s.stripe_account_id) {
+      inner = `<p class="muted">Connect your Stripe account so customers can pay invoices by card from the pay link. The money settles directly to your Stripe account — it never passes through Rise One Man Show.</p>
+        <form method="post" action="/app/settings/connect"><button class="btn teal" type="submit">Connect payments with Stripe</button></form>`;
+    } else if (!s.stripe_charges_enabled) {
+      inner = `<p>⚠️ <strong>Onboarding isn't finished</strong> — card payments stay off until Stripe enables charges on your account.</p>
+        <div class="row-actions">
+          <form method="post" action="/app/settings/connect" class="inline"><button class="btn teal" type="submit">Continue setup</button></form>
+          <a class="btn" href="/app/settings/connect/return">Refresh status</a>
+        </div>`;
+    } else {
+      inner = `<p>✓ <strong>Connected.</strong> Customers can pay invoices by card from the pay link; payments settle to your Stripe account.</p>
+        <div class="row-actions"><a class="btn" href="/app/settings/connect/return">Refresh status</a></div>`;
+    }
+    connectSection = `<section class="card"><h2>Invoice payments</h2>${inner}</section>`;
+  }
   const body = `
   <section class="card"><h2>Settings</h2>
     <form method="post" action="/app/settings">
@@ -499,7 +643,8 @@ function settingsPage({ user, sub, company, flash, s }) {
       </fieldset>
       <button class="btn primary wide" type="submit">Save settings</button>
     </form>
-  </section>`;
+  </section>
+  ${connectSection}`;
   return layout({ title: 'Settings', user, sub, company, flash, body });
 }
 
@@ -596,5 +741,5 @@ module.exports = {
   layout, esc, landingPage, loginPage, signupPage, schedulePage, callFormPage,
   statusPill, callCard, jobPage, reportPage, invoicePage, completedPage,
   customersPage, customerDetailPage, logPage, settingsPage, usersPage,
-  billingPage, platformPage,
+  billingPage, platformPage, payPage,
 };

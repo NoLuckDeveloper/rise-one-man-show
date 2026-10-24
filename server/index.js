@@ -4,25 +4,38 @@ const express = require('express');
 const db = require('./db');
 const auth = require('./auth');
 const billing = require('./billing');
+const payments = require('./payments');
+const mailer = require('./mailer');
 const views = require('./views');
 const { esc, dollarsToCents, hoursBetween, computeInvoice, isoDate } = require('./util');
 
 const app = express();
 
 // Stripe webhook needs the raw body for signature verification — register it
-// BEFORE any body parsers.
+// BEFORE any body parsers. Two event families arrive here:
+// - platform billing events (no event.account) -> STRIPE_WEBHOOK_SECRET
+// - Connect events from companies' own accounts (event.account set, sent to
+//   the Connected-accounts destination) -> STRIPE_CONNECT_WEBHOOK_SECRET,
+//   falling back to the platform secret. The account field is peeked from
+//   the unverified payload ONLY to choose which secret verifies it.
 app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   if (billing.TEST_MODE || !billing.stripe) return res.json({ received: true, testMode: true });
+  let peek = {};
+  try { peek = JSON.parse(req.body.toString('utf8')); } catch (e) { /* verification below will fail cleanly */ }
+  const secret = peek.account
+    ? (process.env.STRIPE_CONNECT_WEBHOOK_SECRET || process.env.STRIPE_WEBHOOK_SECRET)
+    : process.env.STRIPE_WEBHOOK_SECRET;
   const sig = req.headers['stripe-signature'];
   let event;
   try {
-    event = billing.stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    event = billing.stripe.webhooks.constructEvent(req.body, sig, secret);
   } catch (e) {
     console.error('[stripe] webhook signature failed:', e.message);
     return res.status(400).send('Invalid signature');
   }
   try {
-    await billing.applyStripeEvent(event);
+    if (event.account) await payments.applyConnectEvent(event);
+    else await billing.applyStripeEvent(event);
   } catch (e) {
     console.error('[stripe] webhook handling failed:', e.message);
   }
@@ -99,6 +112,106 @@ async function invoiceFor(call) {
   });
   const root = calls[0];
   return { inv, root, leaf, settings };
+}
+
+// --- Customer email records + invoice delivery -------------------------------
+function normalizeEmail(value) {
+  const email = String(value || '').trim().toLowerCase();
+  return email || null;
+}
+
+function isEmail(value) {
+  return !!value && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+async function getCustomerRecord(companyId, customerName) {
+  if (!customerName) return null;
+  return db.one('SELECT * FROM customers WHERE company_id = $1 AND customer_name = $2', [companyId, customerName]);
+}
+
+// Capture point used by call create/edit (and follow-up creation): a
+// non-empty email on any call becomes that customer's email on file. An
+// empty call email does not erase a customer-level address.
+async function syncCustomerEmail(companyId, customerName, emailValue) {
+  const email = normalizeEmail(emailValue);
+  if (!customerName || !email) return null;
+  return db.one(
+    `INSERT INTO customers (company_id, customer_name, email)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (company_id, customer_name)
+     DO UPDATE SET email = EXCLUDED.email, updated_at = now()
+     RETURNING *`,
+    [companyId, customerName, email]
+  );
+}
+
+// The customer-level address on file (if any), with a caller-supplied
+// fallback. Used for invoice recipients and system-created follow-up calls
+// so a customer-page edit is not clobbered by a stale email stored on an
+// older call.
+async function customerEmailOnFile(companyId, customerName, fallback) {
+  const customer = await getCustomerRecord(companyId, customerName);
+  return normalizeEmail(customer && customer.email) || normalizeEmail(fallback);
+}
+
+// Invoice recipient: the customer record wins; the chain root call's
+// captured email is the fallback for customers without a record.
+async function invoiceRecipient(rootCall) {
+  return customerEmailOnFile(rootCall.company_id, rootCall.customer_name, rootCall.customer_email);
+}
+
+async function recordInvoiceEmail(rootCall, recipient) {
+  const sentAt = new Date();
+  await db.q(
+    'UPDATE calls SET invoice_emailed_at = $1, invoice_email_recipient = $2 WHERE id = $3 AND company_id = $4',
+    [sentAt, recipient, rootCall.id, rootCall.company_id]
+  );
+  rootCall.invoice_emailed_at = sentAt;
+  rootCall.invoice_email_recipient = recipient;
+  return sentAt;
+}
+
+async function deliverInvoiceEmail({ company, result }) {
+  const root = result.root;
+  const recipient = await invoiceRecipient(root);
+  if (!recipient) return { sent: false, reason: 'missing-recipient', recipient: null };
+  if (!mailer.configured()) return { sent: false, reason: 'not-configured', recipient };
+  await payments.ensurePayToken(root);
+  const owner = await db.one(
+    "SELECT * FROM users WHERE company_id = $1 AND role = 'owner' ORDER BY id LIMIT 1",
+    [root.company_id]
+  );
+  await mailer.sendInvoiceEmail({
+    to: recipient,
+    ownerEmail: owner ? owner.email : null,
+    company,
+    rootCall: root,
+    inv: result.inv,
+    settings: result.settings,
+    payUrl: payments.payUrl(root),
+  });
+  await recordInvoiceEmail(root, recipient);
+  return { sent: true, reason: null, recipient };
+}
+
+// Fire-and-forget in spirit (but awaited so tests and serverless-style
+// shutdowns behave): auto-send runs only at the transition into
+// invoice-ready, never blocks report completion, and the emailed stamp is
+// the guard against repeat auto-sends if that transition is replayed.
+async function autoEmailInvoice(call) {
+  try {
+    if (!mailer.configured()) return false;
+    const { calls } = await chainCalls(call);
+    const leaf = calls[calls.length - 1];
+    if (!leaf || leaf.id !== call.id) return false;
+    const result = await invoiceFor(call);
+    if (!result || result.root.invoice_emailed_at) return false;
+    const delivery = await deliverInvoiceEmail({ company: await db.one('SELECT * FROM companies WHERE id = $1', [call.company_id]), result });
+    return delivery.sent;
+  } catch (e) {
+    console.error('[mailer] automatic invoice email failed:', e.message);
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -184,10 +297,17 @@ app.get('/app', async (req, res) => {
 app.get('/app/calls/new', async (req, res) => {
   let prefill = null;
   if (req.query.customer) {
+    const customerName = String(req.query.customer);
+    const customer = await getCustomerRecord(req.companyId, customerName);
     prefill = await db.one(
       'SELECT * FROM calls WHERE company_id = $1 AND customer_name = $2 ORDER BY id DESC LIMIT 1',
-      [req.companyId, String(req.query.customer)]
+      [req.companyId, customerName]
     );
+    if (customer && customer.email) {
+      prefill = { ...(prefill || { customer_name: customerName }), customer_email: customer.email };
+    } else if (!prefill && customer) {
+      prefill = { customer_name: customerName };
+    }
   }
   res.send(views.callFormPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), call: null, prefill }));
 });
@@ -195,13 +315,15 @@ app.get('/app/calls/new', async (req, res) => {
 app.post('/app/calls', async (req, res) => {
   const b = req.body;
   const scheduled = b.scheduled_date ? 'scheduled' : 'bucket';
+  const customerEmail = normalizeEmail(b.customer_email);
   const call = await db.one(
-    `INSERT INTO calls (company_id, customer_name, address, phone, poc_name, poc_phone, description, status, scheduled_date, scheduled_time, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-    [req.companyId, b.customer_name, b.address || null, b.phone || null, b.poc_name || null, b.poc_phone || null,
+    `INSERT INTO calls (company_id, customer_name, address, phone, customer_email, poc_name, poc_phone, description, status, scheduled_date, scheduled_time, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+    [req.companyId, b.customer_name, b.address || null, b.phone || null, customerEmail, b.poc_name || null, b.poc_phone || null,
      b.description || null, scheduled, b.scheduled_date || null, b.scheduled_time || null, req.user.id]
   );
   await db.q('UPDATE calls SET root_call_id = id WHERE id = $1', [call.id]);
+  await syncCustomerEmail(req.companyId, call.customer_name, customerEmail);
   res.redirect('/app?msg=' + encodeURIComponent('Call added to the ' + (scheduled === 'scheduled' ? 'schedule.' : 'bucket.')));
 });
 
@@ -212,23 +334,27 @@ async function loadCall(req, res, next) {
   next();
 }
 
-app.get('/app/calls/:id/edit', loadCall, (req, res) => {
-  res.send(views.callFormPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), call: req.call, prefill: null }));
+app.get('/app/calls/:id/edit', loadCall, async (req, res) => {
+  const customerEmail = await customerEmailOnFile(req.companyId, req.call.customer_name, req.call.customer_email);
+  const call = { ...req.call, customer_email: customerEmail };
+  res.send(views.callFormPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), call, prefill: null }));
 });
 
 app.post('/app/calls/:id/edit', loadCall, async (req, res) => {
   const b = req.body;
+  const customerEmail = normalizeEmail(b.customer_email);
   let status = req.call.status;
   let date = b.scheduled_date || null;
   let time = b.scheduled_time || null;
   if (b.unschedule) { status = 'bucket'; date = null; time = null; }
   else if (date && status === 'bucket') status = 'scheduled';
   await db.q(
-    `UPDATE calls SET customer_name=$1, address=$2, phone=$3, poc_name=$4, poc_phone=$5, description=$6,
-       status=$7, scheduled_date=$8, scheduled_time=$9 WHERE id=$10 AND company_id=$11`,
-    [b.customer_name, b.address || null, b.phone || null, b.poc_name || null, b.poc_phone || null,
+    `UPDATE calls SET customer_name=$1, address=$2, phone=$3, customer_email=$4, poc_name=$5, poc_phone=$6, description=$7,
+       status=$8, scheduled_date=$9, scheduled_time=$10 WHERE id=$11 AND company_id=$12`,
+    [b.customer_name, b.address || null, b.phone || null, customerEmail, b.poc_name || null, b.poc_phone || null,
      b.description || null, status, date, time, req.call.id, req.companyId]
   );
+  await syncCustomerEmail(req.companyId, b.customer_name, customerEmail);
   res.redirect('/app?msg=' + encodeURIComponent('Call saved.'));
 });
 
@@ -321,6 +447,7 @@ app.post('/app/calls/:id/report', loadCall, async (req, res) => {
   try { photos = JSON.parse(b.photos_json || '[]'); } catch (e) { photos = []; }
 
   const existing = await db.one('SELECT * FROM job_reports WHERE call_id = $1', [req.call.id]);
+  const wasInvoiceReady = !!(existing && existing.complete && !existing.follow_up);
   const values = [req.call.id, req.companyId, b.asset_name || null, b.asset_make || null, b.asset_model || null,
     b.asset_serial || null, b.location_on_site || null, b.work_performed || null, JSON.stringify(parts),
     b.notes || null, JSON.stringify(photos), followUp, b.follow_up_date || null, b.follow_up_description || null, complete];
@@ -340,15 +467,23 @@ app.post('/app/calls/:id/report', loadCall, async (req, res) => {
     const child = await db.one('SELECT id FROM calls WHERE parent_call_id = $1', [req.call.id]);
     if (!child) {
       const rootId = req.call.root_call_id || req.call.id;
+      const followUpEmail = await customerEmailOnFile(req.companyId, req.call.customer_name, req.call.customer_email);
       const nc = await db.one(
-        `INSERT INTO calls (company_id, customer_name, address, phone, poc_name, poc_phone, description,
+        `INSERT INTO calls (company_id, customer_name, address, phone, customer_email, poc_name, poc_phone, description,
            status, scheduled_date, root_call_id, parent_call_id, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,'scheduled',$8,$9,$10,$11) RETURNING *`,
-        [req.companyId, req.call.customer_name, req.call.address, req.call.phone, req.call.poc_name,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'scheduled',$9,$10,$11,$12) RETURNING *`,
+        [req.companyId, req.call.customer_name, req.call.address, req.call.phone, followUpEmail, req.call.poc_name,
          req.call.poc_phone, b.follow_up_description || req.call.description, b.follow_up_date, rootId, req.call.id, req.user.id]
       );
+      await syncCustomerEmail(req.companyId, nc.customer_name, nc.customer_email);
       void nc;
     }
+  }
+  // Invoice generation point in this derived-invoice model: the final
+  // report has just transitioned to complete with no follow-up pending.
+  // Auto-email is best-effort and must never block saving/completing a job.
+  if (complete && !followUp && !wasInvoiceReady) {
+    await autoEmailInvoice(req.call);
   }
   res.redirect(`/app/calls/${req.call.id}/report?msg=` + encodeURIComponent(complete ? 'Report saved — job marked complete.' : 'Report saved.'));
 });
@@ -357,10 +492,132 @@ app.post('/app/calls/:id/report', loadCall, async (req, res) => {
 app.get('/app/calls/:id/invoice', loadCall, async (req, res) => {
   const result = await invoiceFor(req.call);
   if (!result) return back(res, '/app/completed', 'err', 'No invoice yet — invoices generate when the final call in the chain is marked complete with no follow-up pending.');
+  await payments.ensurePayToken(result.root);
+  const recipientEmail = await invoiceRecipient(result.root);
   res.send(views.invoicePage({
     user: req.user, sub: req.sub, company: req.company, settings: result.settings,
     rootCall: result.root, inv: result.inv, print: req.query.print === '1',
+    payUrl: payments.payUrl(result.root),
+    recipientEmail,
+    canManage: ['owner', 'admin'].includes(req.user.role),
+    resendConfigured: mailer.configured(),
   }));
+});
+
+// Manual payment recording (cash / check / Venmo / PayPal / other) — the
+// payment state lives on the chain's root call.
+app.post('/app/calls/:id/mark-paid', auth.requireRole('owner', 'admin'), loadCall, async (req, res) => {
+  const result = await invoiceFor(req.call);
+  if (!result) return back(res, '/app/completed', 'err', 'No invoice yet for this call chain.');
+  const methods = ['Cash', 'Check', 'Venmo', 'PayPal', 'Other'];
+  const method = methods.includes(req.body.method) ? req.body.method : 'Other';
+  const dateStr = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.paid_date || '')) ? String(req.body.paid_date) : isoDate(new Date());
+  const changed = await payments.markInvoicePaid(result.root.id, {
+    method,
+    reference: String(req.body.reference || '').trim() || null,
+    paidAt: new Date(`${dateStr}T12:00:00Z`),
+  });
+  res.redirect(`/app/calls/${req.call.id}/invoice?msg=` + encodeURIComponent(
+    changed ? `Invoice marked as paid (${method}).` : 'Invoice was already marked paid.'));
+});
+
+// Email the invoice (with its pay link) to the customer. The recipient is
+// resolved customers-table-first, then the ROOT call's customer_email. An
+// address supplied by this form is saved to both places before sending.
+app.post('/app/calls/:id/email-invoice', auth.requireRole('owner', 'admin'), loadCall, async (req, res) => {
+  const invoiceUrl = `/app/calls/${req.call.id}/invoice`;
+  const result = await invoiceFor(req.call);
+  if (!result) return back(res, '/app/completed', 'err', 'No invoice yet for this call chain.');
+  const root = result.root;
+  const provided = normalizeEmail(req.body.customer_email);
+  if (provided) {
+    if (!isEmail(provided)) return back(res, invoiceUrl, 'err', 'That email address does not look valid.');
+    await db.q('UPDATE calls SET customer_email = $1 WHERE id = $2 AND company_id = $3', [provided, root.id, req.companyId]);
+    root.customer_email = provided;
+    await syncCustomerEmail(req.companyId, root.customer_name, provided);
+  }
+  const recipient = await invoiceRecipient(root);
+  if (!recipient) {
+    return back(res, invoiceUrl, 'err', 'Add the customer\'s email address first, then send.');
+  }
+  if (!mailer.configured()) {
+    return back(res, invoiceUrl, 'err', 'Email isn\'t configured yet — the server needs a RESEND_API_KEY before invoices can be emailed. You can still copy the pay link below and send it yourself.');
+  }
+  try {
+    const delivery = await deliverInvoiceEmail({ company: req.company, result });
+    if (!delivery.sent) throw new Error('Invoice email was not sent.');
+  } catch (e) {
+    console.error('[mailer] invoice email failed:', e.message);
+    return back(res, invoiceUrl, 'err', 'Invoice email failed to send — ' + e.message);
+  }
+  res.redirect(invoiceUrl + '?msg=' + encodeURIComponent(`Invoice emailed to ${recipient}.`));
+});
+
+// --- Public invoice pay page ---------------------------------------------------
+// No login: the unguessable pay_token on the chain's root call is the key.
+async function loadPayInvoice(token) {
+  const root = await db.one('SELECT * FROM calls WHERE pay_token = $1', [token]);
+  if (!root) return null;
+  const result = await invoiceFor(root);
+  if (!result) return null;
+  const company = await db.one('SELECT * FROM companies WHERE id = $1', [root.company_id]);
+  if (!company) return null;
+  return { root: result.root, company, settings: result.settings, inv: result.inv };
+}
+
+app.get('/pay/:token', async (req, res) => {
+  const data = await loadPayInvoice(req.params.token);
+  if (!data) return res.status(404).send('Invoice not found.');
+  const { root, company, settings, inv } = data;
+  // Success-return fallback: if Stripe says this session was paid, record it
+  // even if the Connect webhook destination has not delivered yet.
+  if (req.query.paid === '1' && req.query.session_id && root.payment_status !== 'paid'
+      && !billing.TEST_MODE && settings.stripe_account_id && !payments.isSimulatedAccount(settings.stripe_account_id)) {
+    try {
+      const marked = await payments.verifyCheckoutSession({ settings, rootCall: root, sessionId: String(req.query.session_id) });
+      if (marked) root.payment_status = 'paid';
+    } catch (e) {
+      console.error('[pay] session verify failed:', e.message);
+    }
+  }
+  let state = 'unavailable';
+  if (root.payment_status === 'paid') state = 'paid';
+  else if (settings.stripe_account_id && settings.stripe_charges_enabled) state = 'pay';
+  res.send(views.payPage({
+    company, rootCall: root, inv, settings, state,
+    testMode: billing.TEST_MODE, justPaid: req.query.paid === '1', flash: flashFrom(req),
+  }));
+});
+
+app.post('/pay/:token/checkout', async (req, res) => {
+  const data = await loadPayInvoice(req.params.token);
+  if (!data) return res.status(404).send('Invoice not found.');
+  const { root, company, settings, inv } = data;
+  if (root.payment_status === 'paid') return res.redirect(`/pay/${req.params.token}`); // never charge twice
+  if (billing.TEST_MODE) return res.redirect(`/pay/${req.params.token}?err=` + encodeURIComponent('TEST MODE: card checkout is simulated — use the simulate button on the pay page.'));
+  if (!settings.stripe_account_id || !settings.stripe_charges_enabled) {
+    return res.redirect(`/pay/${req.params.token}?err=` + encodeURIComponent('Online payment is not available for this invoice — please contact the company.'));
+  }
+  try {
+    const session = await payments.createInvoiceCheckout({ company, settings, rootCall: root, inv });
+    res.redirect(session.url);
+  } catch (e) {
+    console.error('[pay] checkout failed:', e.message);
+    res.redirect(`/pay/${req.params.token}?err=` + encodeURIComponent('Could not start the card payment — please contact the company.'));
+  }
+});
+
+// TEST MODE only: simulate a successful card payment on the pay page.
+app.post('/pay/:token/simulate', async (req, res) => {
+  if (!billing.TEST_MODE) return res.status(403).send('Live mode.');
+  const data = await loadPayInvoice(req.params.token);
+  if (!data) return res.status(404).send('Invoice not found.');
+  if (data.root.payment_status !== 'paid') {
+    await payments.markInvoicePaid(data.root.id, {
+      method: 'card', reference: 'TEST MODE simulated payment', paidAt: new Date(),
+    });
+  }
+  res.redirect(`/pay/${req.params.token}?paid=1`);
 });
 
 // --- Completed / Customers ---------------------------------------------------
@@ -370,7 +627,12 @@ app.get('/app/completed', async (req, res) => {
   const out = [];
   for (const call of rows) {
     const inv = await invoiceFor(call);
-    out.push({ call, hasInvoice: !!inv });
+    out.push({
+      call,
+      hasInvoice: !!inv,
+      paid: !!inv && inv.root.payment_status === 'paid',
+      payMethod: inv ? inv.root.payment_method : null,
+    });
   }
   res.send(views.completedPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), rows: out }));
 });
@@ -378,22 +640,59 @@ app.get('/app/completed', async (req, res) => {
 app.get('/app/customers', async (req, res) => {
   const qstr = String(req.query.q || '').trim();
   const customers = await db.many(
-    `SELECT customer_name, COUNT(*)::int AS call_count,
-            (ARRAY_AGG(address ORDER BY id DESC))[1] AS address,
-            (ARRAY_AGG(phone ORDER BY id DESC))[1] AS phone
-       FROM calls WHERE company_id = $1
-        AND ($2 = '' OR customer_name ILIKE $3 OR address ILIKE $3 OR phone ILIKE $3)
-      GROUP BY customer_name ORDER BY customer_name`,
+    `SELECT c.customer_name, COUNT(*)::int AS call_count,
+            (ARRAY_AGG(c.address ORDER BY c.id DESC))[1] AS address,
+            (ARRAY_AGG(c.phone ORDER BY c.id DESC))[1] AS phone,
+            MAX(cust.email) AS email
+       FROM calls c
+       LEFT JOIN customers cust
+         ON cust.company_id = c.company_id AND cust.customer_name = c.customer_name
+      WHERE c.company_id = $1
+        AND ($2 = '' OR c.customer_name ILIKE $3 OR c.address ILIKE $3 OR c.phone ILIKE $3 OR cust.email ILIKE $3)
+      GROUP BY c.customer_name ORDER BY c.customer_name`,
     [req.companyId, qstr, '%' + qstr + '%']
   );
-  res.send(views.customersPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), customers, q: qstr }));
+  res.send(views.customersPage({
+    user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), customers, q: qstr,
+    canEditCustomerEmail: ['owner', 'admin'].includes(req.user.role),
+  }));
+});
+
+app.post('/app/customers/:name/email', auth.requireRole('owner', 'admin'), async (req, res) => {
+  const name = req.params.name;
+  const known = await db.one(
+    `SELECT 1 AS found FROM calls WHERE company_id = $1 AND customer_name = $2
+     UNION ALL
+     SELECT 1 AS found FROM customers WHERE company_id = $1 AND customer_name = $2
+     LIMIT 1`,
+    [req.companyId, name]
+  );
+  const detailUrl = `/app/customers/${encodeURIComponent(name)}`;
+  if (!known) return res.status(404).send('Customer not found.');
+  const email = normalizeEmail(req.body.email);
+  if (email && !isEmail(email)) {
+    return back(res, req.body.from === 'list' ? '/app/customers' : detailUrl, 'err', 'That email address does not look valid.');
+  }
+  await db.q(
+    `INSERT INTO customers (company_id, customer_name, email)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (company_id, customer_name)
+     DO UPDATE SET email = EXCLUDED.email, updated_at = now()`,
+    [req.companyId, name, email]
+  );
+  const target = req.body.from === 'list' ? '/app/customers' : detailUrl;
+  res.redirect(target + '?msg=' + encodeURIComponent(email ? `Customer email saved: ${email}.` : 'Customer email cleared.'));
 });
 
 app.get('/app/customers/:name', async (req, res) => {
   const name = req.params.name;
   const calls = await db.many('SELECT * FROM calls WHERE company_id = $1 AND customer_name = $2 ORDER BY id DESC', [req.companyId, name]);
-  if (!calls.length) return res.status(404).send('Customer not found.');
-  res.send(views.customerDetailPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), name, calls }));
+  const customer = await getCustomerRecord(req.companyId, name);
+  if (!calls.length && !customer) return res.status(404).send('Customer not found.');
+  res.send(views.customerDetailPage({
+    user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), name, calls, customer,
+    canEditCustomerEmail: ['owner', 'admin'].includes(req.user.role),
+  }));
 });
 
 // --- Log & Report ---------------------------------------------------------------
@@ -530,6 +829,62 @@ app.post('/app/settings', auth.requireRole('owner', 'admin'), async (req, res) =
      b.reminder_in || '08:30', b.reminder_out || '16:30', b.pay_anchor, parseInt(b.pay_cycle_days, 10) || 14,
      b.quarter_start, b.quarter_end]);
   res.redirect('/app/settings?msg=' + encodeURIComponent('Settings saved.'));
+});
+
+// --- Stripe Connect (owner only): invoice card payments ----------------------
+// Creates the company's Express account on first use, then sends the owner
+// through Stripe-hosted onboarding. Charges enable asynchronously on
+// Stripe's side; the return route re-reads and stores the status.
+app.post('/app/settings/connect', auth.requireRole('owner'), async (req, res) => {
+  if (billing.TEST_MODE) return back(res, '/app/settings', 'err', 'TEST MODE — use "Simulate Connect setup" instead.');
+  try {
+    let accountId = req.settings.stripe_account_id;
+    if (!accountId || payments.isSimulatedAccount(accountId)) {
+      const account = await payments.createExpressAccount(req.company, req.user);
+      accountId = account.id;
+      await db.q('UPDATE company_settings SET stripe_account_id = $1, stripe_charges_enabled = FALSE WHERE company_id = $2',
+        [accountId, req.companyId]);
+    }
+    const link = await payments.createOnboardingLink(accountId);
+    res.redirect(link.url);
+  } catch (e) {
+    console.error('[connect] onboarding start failed:', e.message);
+    back(res, '/app/settings', 'err', 'Could not start Stripe Connect onboarding — check the server Stripe keys and Connect settings.');
+  }
+});
+app.get('/app/settings/connect/return', auth.requireRole('owner'), async (req, res) => {
+  let enabled = !!req.settings.stripe_charges_enabled;
+  if (!billing.TEST_MODE && req.settings.stripe_account_id && !payments.isSimulatedAccount(req.settings.stripe_account_id)) {
+    try {
+      const account = await payments.refreshConnectStatus(req.settings);
+      enabled = !!account.charges_enabled;
+    } catch (e) {
+      console.error('[connect] status refresh failed:', e.message);
+    }
+  }
+  back(res, '/app/settings', enabled ? 'msg' : 'err', enabled
+    ? 'Stripe Connect is active — customers can now pay invoices by card.'
+    : 'Connect setup is not finished yet — card payments turn on once Stripe enables charges for your account.');
+});
+app.get('/app/settings/connect/refresh', auth.requireRole('owner'), async (req, res) => {
+  // Stripe sends the owner here when an onboarding link has expired.
+  if (billing.TEST_MODE || !req.settings.stripe_account_id || payments.isSimulatedAccount(req.settings.stripe_account_id)) {
+    return res.redirect('/app/settings');
+  }
+  try {
+    const link = await payments.createOnboardingLink(req.settings.stripe_account_id);
+    res.redirect(link.url);
+  } catch (e) {
+    console.error('[connect] onboarding refresh failed:', e.message);
+    back(res, '/app/settings', 'err', 'Could not refresh the Stripe onboarding link.');
+  }
+});
+// TEST MODE only: simulate a finished Connect setup locally.
+app.post('/app/settings/connect/simulate', auth.requireRole('owner'), async (req, res) => {
+  if (!billing.TEST_MODE) return res.status(403).send('Live mode.');
+  await db.q('UPDATE company_settings SET stripe_account_id = $1, stripe_charges_enabled = TRUE WHERE company_id = $2',
+    ['acct_test_' + req.companyId, req.companyId]);
+  res.redirect('/app/settings?msg=' + encodeURIComponent('TEST MODE: Connect simulated — invoice pay links now offer a (simulated) card payment.'));
 });
 
 // --- Users --------------------------------------------------------------------------
