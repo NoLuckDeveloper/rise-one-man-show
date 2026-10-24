@@ -66,6 +66,18 @@ Every tenant query is scoped by `company_id`.
   and prefilled "+ New call", Weekly Log & printable Report (pay-period,
   monthly, quarterly totals; by-job breakdown), gas ⛽ / maintenance 🔧
   entries with receipt photos, per-company Settings
+- **Dispatch**: every call has an assignee. Owners / admins assign calls on
+  the create / edit forms (an "Unassigned" option leaves the call in the
+  owner/admin-only pool); the Schedule page has a per-tech filter so they
+  can view and build one tech's schedule. **Techs see only their own jobs**:
+  bucket, scheduled, and completed lists are filtered to their assigned
+  calls, unassigned calls are hidden from them, direct URLs to another
+  tech's (or an unassigned) call return 404, and the job run flow
+  (travel / start job / end job) refuses anything not assigned to them.
+  Assignment changes are owner/admin only — a tech's submitted assignee
+  is ignored, and a tech-created call is assigned to the creating tech so
+  it stays visible to them. Follow-up calls inherit the original call's
+  assignee. Customers and Log & Report stay company-wide in v1.
 - Platform admin view: every company, trialing/active counts, estimated MRR
   (sum of trialing/active companies' plan rates, with a per-plan breakdown),
   extend trial +7 days, cancel, remove demo
