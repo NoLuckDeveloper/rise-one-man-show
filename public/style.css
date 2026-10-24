@@ -119,3 +119,6 @@ table.kv td:first-child { color: var(--muted); }
   main { max-width: none; }
   .card { background: #fff; color: #111; border: none; }
 }
+
+.site-footer { text-align: center; padding: 18px 12px 26px; font-size: 0.85rem; color: var(--muted, #8fa3b8); }
+.site-footer a { color: inherit; text-decoration: underline; }
