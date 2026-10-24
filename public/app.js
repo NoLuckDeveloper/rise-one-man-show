@@ -43,6 +43,15 @@ function haversineMiles(lat1, lon1, lat2, lon2) {
 
 const gpsBtn = document.getElementById('gps-start');
 if (gpsBtn) {
+  // Inside the native app, the foreground service tracks this trip — the
+  // page GPS would double-count miles and stops when backgrounded, so it
+  // stays off and the native status shows instead.
+  if (window.RiseNative && window.RiseNative.isNative && window.RiseNative.isNative()) {
+    gpsBtn.textContent = 'Native GPS tracking';
+    gpsBtn.disabled = true;
+    const status = document.getElementById('gps-status');
+    if (status) status.textContent = 'Tracking in the background — miles update live.';
+  } else {
   let watchId = null;
   let last = null;
   let total = 0;
@@ -79,6 +88,24 @@ if (gpsBtn) {
       () => { if (status) status.textContent = 'Location permission denied — type miles instead.'; },
       { enableHighAccuracy: true, maximumAge: 5000 }
     );
+  });
+  }
+}
+
+// --- Native app bridge: background trip tracking -------------------------------
+// On the traveling page, tell the native app which call's trip is open so its
+// foreground service posts live positions for it (the trip row already exists
+// by the time this page loads, so there is no start race). Stop tracking when
+// the job starts or the travel leg is canceled. In a browser this is a no-op.
+if (window.RiseNative && window.RiseNative.isNative && window.RiseNative.isNative()) {
+  const jobForm = document.querySelector('form[action$="/start-job"]');
+  if (jobForm) {
+    const m = jobForm.action.match(/\/app\/calls\/(\d+)\/start-job/);
+    if (m) window.RiseNative.startTrip(parseInt(m[1], 10));
+    jobForm.addEventListener('submit', () => window.RiseNative.stopTrip());
+  }
+  document.querySelectorAll('form[action$="/cancel-travel"]').forEach((f) => {
+    f.addEventListener('submit', () => window.RiseNative.stopTrip());
   });
 }
 // Manual miles override the GPS value at submit time.
