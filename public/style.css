@@ -97,7 +97,13 @@ form.inline { display: inline; }
 .tag { font-size: 12px; background: var(--navy); border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; color: var(--muted); }
 .tag.warn { border-color: var(--danger); color: #fca5a5; }
 
-.fab { position: fixed; right: 18px; bottom: 22px; width: 60px; height: 60px; border-radius: 50%; background: var(--green); color: #06280f; font-size: 34px; text-align: center; line-height: 58px; text-decoration: none; box-shadow: 0 6px 18px rgba(0,0,0,.45); z-index: 30; }
+.fab { position: fixed; right: 18px; bottom: 22px; width: 60px; height: 60px; border-radius: 50%; background: var(--green); text-decoration: none; box-shadow: 0 6px 18px rgba(0,0,0,.45); z-index: 30; }
+/* Plus drawn from two centered bars, not a text glyph: text centering via
+   line-height renders off-center in Android WebViews because the "+" glyph
+   sits high in its font box. Bars are geometrically centered everywhere. */
+.fab::before, .fab::after { content: ""; position: absolute; left: 50%; top: 50%; background: #06280f; border-radius: 2px; }
+.fab::before { width: 26px; height: 4px; transform: translate(-50%, -50%); }
+.fab::after { width: 4px; height: 26px; transform: translate(-50%, -50%); }
 
 .sheet { position: fixed; inset: 0; background: rgba(0,0,0,.6); padding: 20px 12px; overflow: auto; z-index: 40; }
 .sheet .card { max-width: 480px; margin: 30px auto; }
