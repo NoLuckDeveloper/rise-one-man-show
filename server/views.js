@@ -95,13 +95,25 @@ function landingPage(flash) {
        software for solo and small field-service businesses — scheduling, job
        reports, invoicing, mileage and hours in one place.</p>
     <p class="price">7-day free trial on any plan · upgrade anytime, prorated · cancel anytime</p>
-    ${tierTableHtml(billing.tiers.TIERS)}
     <div class="cta-row">
       <a class="btn primary" href="/signup">Start free trial</a>
       <a class="btn" href="/demo.html">Try the demo</a>
       <a class="btn" href="/login">Log in</a>
     </div>
-  </section>`;
+    <div class="cta-row">
+      <button class="btn" type="button" data-open="pricing-sheet">See pricing</button>
+    </div>
+  </section>
+  <div class="sheet" id="pricing-sheet" hidden>
+    <div class="card wide">
+      <h3>Pricing</h3>
+      ${tierTableHtml(billing.tiers.TIERS)}
+      <div class="cta-row">
+        <a class="btn primary" href="/signup">Start free trial</a>
+        <button class="btn" type="button" data-close>Close</button>
+      </div>
+    </div>
+  </div>`;
   return layout({ title: 'Field Management Software', flash, body });
 }
 
