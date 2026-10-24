@@ -173,6 +173,7 @@ function callCard(call, { showOpen = true } = {}) {
     <div class="call-head"><strong>${esc(call.customer_name)}</strong> ${statusPill(call)}
       ${call.parent_call_id ? '<span class="tag">↩ Follow-up</span>' : ''}</div>
     <div class="call-desc">${esc(call.description || '')}</div>
+    ${call.assignee_name !== undefined ? `<div class="muted">👤 ${esc(call.assignee_name || 'Unassigned')}</div>` : ''}
     ${call.address ? `<div><a href="${mapsUrl(call.address)}" target="_blank" rel="noopener">📍 ${esc(call.address)}</a></div>` : ''}
     ${call.scheduled_date ? `<div class="sched-time">🗓 ${isoDate(call.scheduled_date)}${call.scheduled_time ? ' · ' + esc(call.scheduled_time) : ''}</div>` : ''}
     <div class="row-actions">
@@ -183,9 +184,20 @@ function callCard(call, { showOpen = true } = {}) {
   </div>`;
 }
 
-function schedulePage({ user, sub, company, flash, bucket, byDay, todayGas, todayMaint }) {
+function schedulePage({ user, sub, company, flash, bucket, byDay, todayGas, todayMaint, assignees = [], techFilter = null, canFilter = false }) {
   let body = `<div class="page-head"><h2>Schedule</h2>
     <span class="bucket-count">${bucket.length} in the Bucket</span></div>`;
+  if (canFilter) {
+    body += `<form method="get" action="/app" class="row-actions">
+      <label style="flex:1;min-width:220px">Show schedule for
+        <select name="tech">
+          <option value="">All team members</option>
+          ${assignees.map((u) => `<option value="${u.id}"${techFilter === u.id ? ' selected' : ''}>${esc(u.name)} (${esc(u.role)})</option>`).join('')}
+        </select>
+      </label>
+      <button class="btn small" type="submit">Show</button>
+    </form>`;
+  }
 
   body += `<section><h3>🪣 Bucket — unscheduled calls</h3>`;
   body += bucket.length ? bucket.map((c) => callCard(c)).join('') : '<p class="muted">No unscheduled calls.</p>';
@@ -244,7 +256,7 @@ function schedulePage({ user, sub, company, flash, bucket, byDay, todayGas, toda
   return layout({ title: 'Schedule', user, sub, company, flash, body });
 }
 
-function callFormPage({ user, sub, company, flash, call, prefill }) {
+function callFormPage({ user, sub, company, flash, call, prefill, assignees = [], canAssign = false }) {
   const c = call || prefill || {};
   const editing = !!call;
   const body = `
@@ -252,6 +264,12 @@ function callFormPage({ user, sub, company, flash, call, prefill }) {
     <h2>${editing ? 'Edit call' : 'New call'}</h2>
     <form method="post" action="${editing ? `/app/calls/${call.id}/edit` : '/app/calls'}">
       <label>Customer name <input name="customer_name" required value="${esc(c.customer_name || '')}"></label>
+      ${canAssign ? `<label>Assigned to
+        <select name="assigned_user_id">
+          <option value="">Unassigned</option>
+          ${assignees.map((u) => `<option value="${u.id}"${c.assigned_user_id === u.id ? ' selected' : ''}>${esc(u.name)} (${esc(u.role)})</option>`).join('')}
+        </select>
+      </label>` : ''}
       <label>Address <input name="address" value="${esc(c.address || '')}"></label>
       <label>Phone <input name="phone" value="${esc(c.phone || '')}"></label>
       <label>Customer email (for invoicing) <input type="email" name="customer_email" value="${esc(c.customer_email || '')}"></label>
@@ -517,7 +535,7 @@ function completedPage({ user, sub, company, flash, rows }) {
       <div class="card call-card">
         <div class="call-head"><strong>${esc(call.customer_name)}</strong> ${statusPill(call)}${paid ? ` <span class="pill paid">✓ Paid${payMethod ? ' · ' + esc(payMethodLabel(payMethod)) : ''}</span>` : ''}</div>
         <div class="call-desc">${esc(call.description || '')}</div>
-        <div class="muted">Completed ${call.completed_at ? new Date(call.completed_at).toLocaleDateString() : ''}</div>
+        <div class="muted">👤 ${esc(call.assignee_name || 'Unassigned')} · Completed ${call.completed_at ? new Date(call.completed_at).toLocaleDateString() : ''}</div>
         <div class="row-actions spread">
           <a class="btn green" href="/app/calls/${call.id}/report">📋 Report</a>
           ${hasInvoice ? `<a class="btn blue" href="/app/calls/${call.id}/invoice">🧾 Invoice</a>` : '<span class="muted">No invoice (follow-up chain)</span>'}

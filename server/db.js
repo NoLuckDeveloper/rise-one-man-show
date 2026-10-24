@@ -254,6 +254,12 @@ CREATE TABLE IF NOT EXISTS trip_positions (
 );
 CREATE INDEX IF NOT EXISTS idx_trip_positions_trip ON trip_positions(trip_id);
 
+-- Dispatch: call assignment. NULL = unassigned, visible to owner/admin
+-- only; techs see only calls assigned to them. Existing calls backfill to
+-- NULL, which is consistent with the tech-visibility rule.
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS assigned_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_calls_assigned ON calls(assigned_user_id);
+
 -- Subscription tiers (solo | team3 | team6 | team10). Seat caps count
 -- total active users per company. ADD COLUMN ... DEFAULT fills existing
 -- rows with 'solo', which is correct: every pre-tier subscription was on

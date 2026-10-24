@@ -56,6 +56,32 @@ function flashFrom(req) {
 }
 const back = (res, url, kind, msg) => res.redirect(`${url}${url.includes('?') ? '&' : '?'}${kind}=${encodeURIComponent(msg)}`);
 
+// --- Dispatch: call assignment -----------------------------------------------
+// Techs see only their own assigned calls; owner/admin see all. The SQL
+// fragment takes the caller's tech id (or NULL for owner/admin) as a bound
+// parameter, so every list query and loadCall shares one visibility rule.
+// qualifier is '' for unaliased calls queries, 'c.' for aliased ones.
+function assigneeClause(idx, qualifier) {
+  return ` AND ($${idx}::int IS NULL OR ${qualifier}assigned_user_id = $${idx})`;
+}
+function techScopeId(user) {
+  return user.role === 'tech' ? user.id : null;
+}
+function canAssign(user) {
+  return user.role === 'owner' || user.role === 'admin';
+}
+async function companyUsers(companyId) {
+  return db.many('SELECT id, name, role FROM users WHERE company_id = $1 AND active = TRUE ORDER BY name', [companyId]);
+}
+// Resolve a submitted assignee for owner/admin: must be an active user of
+// this company, otherwise NULL (Unassigned). Never trust a raw id.
+async function resolveAssignee(companyId, raw) {
+  const id = parseInt(raw, 10);
+  if (!id) return null;
+  const u = await db.one('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND active = TRUE', [id, companyId]);
+  return u ? u.id : null;
+}
+
 // Loads company + subscription for company users and enforces the
 // trial-ended / canceled lock (billing page only).
 async function companyContext(req, res, next) {
@@ -284,9 +310,26 @@ app.use('/app', auth.requireAuth, companyContext);
 
 app.get('/app', async (req, res) => {
   const cid = req.companyId;
-  const bucket = await db.many("SELECT * FROM calls WHERE company_id = $1 AND status = 'bucket' ORDER BY created_at", [cid]);
+  const scopeId = techScopeId(req.user);
+  // Owner/admin per-tech filter: only a real company user id filters; anything
+  // else (including a tech's attempt to pass one) is ignored. Techs always
+  // see only their own calls, filter or not.
+  let assignees = [];
+  let techFilter = null;
+  if (canAssign(req.user)) {
+    assignees = await companyUsers(cid);
+    const wanted = parseInt(req.query.tech, 10);
+    if (wanted && assignees.some((u) => u.id === wanted)) techFilter = wanted;
+  }
+  const bucket = await db.many(
+    `SELECT c.*, u.name AS assignee_name FROM calls c LEFT JOIN users u ON u.id = c.assigned_user_id
+     WHERE c.company_id = $1 AND c.status = 'bucket'${assigneeClause(2, 'c.')}${assigneeClause(3, 'c.')} ORDER BY c.created_at`,
+    [cid, scopeId, techFilter]);
   const scheduled = await db.many(
-    "SELECT * FROM calls WHERE company_id = $1 AND status IN ('scheduled','traveling','on_job') ORDER BY scheduled_date NULLS LAST, id", [cid]);
+    `SELECT c.*, u.name AS assignee_name FROM calls c LEFT JOIN users u ON u.id = c.assigned_user_id
+     WHERE c.company_id = $1 AND c.status IN ('scheduled','traveling','on_job')${assigneeClause(2, 'c.')}${assigneeClause(3, 'c.')}
+     ORDER BY c.scheduled_date NULLS LAST, c.id`,
+    [cid, scopeId, techFilter]);
   const byDay = {};
   for (const c of scheduled) {
     const key = c.scheduled_date ? isoDate(c.scheduled_date) : 'Unscheduled';
@@ -294,7 +337,7 @@ app.get('/app', async (req, res) => {
   }
   const todayGas = await db.many('SELECT * FROM gas_purchases WHERE company_id = $1 AND date = CURRENT_DATE ORDER BY id', [cid]);
   const todayMaint = await db.many('SELECT * FROM maintenance_receipts WHERE company_id = $1 AND date = CURRENT_DATE ORDER BY id', [cid]);
-  res.send(views.schedulePage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), bucket, byDay, todayGas, todayMaint }));
+  res.send(views.schedulePage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), bucket, byDay, todayGas, todayMaint, assignees, techFilter, canFilter: canAssign(req.user) }));
 });
 
 // --- Calls: intake / edit ----------------------------------------------------
@@ -313,18 +356,23 @@ app.get('/app/calls/new', async (req, res) => {
       prefill = { customer_name: customerName };
     }
   }
-  res.send(views.callFormPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), call: null, prefill }));
+  res.send(views.callFormPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), call: null, prefill, assignees: await companyUsers(req.companyId), canAssign: canAssign(req.user) }));
 });
 
 app.post('/app/calls', async (req, res) => {
   const b = req.body;
   const scheduled = b.scheduled_date ? 'scheduled' : 'bucket';
   const customerEmail = normalizeEmail(b.customer_email);
+  // Assignment is owner/admin only: a tech's submitted assignee is ignored.
+  // A tech-created call is assigned to the creating tech so it stays visible
+  // to them (unassigned calls are owner/admin only); owner/admin use the
+  // dropdown, defaulting to Unassigned.
+  const assignedUserId = canAssign(req.user) ? await resolveAssignee(req.companyId, b.assigned_user_id) : req.user.id;
   const call = await db.one(
-    `INSERT INTO calls (company_id, customer_name, address, phone, customer_email, poc_name, poc_phone, description, status, scheduled_date, scheduled_time, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+    `INSERT INTO calls (company_id, customer_name, address, phone, customer_email, poc_name, poc_phone, description, status, scheduled_date, scheduled_time, created_by, assigned_user_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
     [req.companyId, b.customer_name, b.address || null, b.phone || null, customerEmail, b.poc_name || null, b.poc_phone || null,
-     b.description || null, scheduled, b.scheduled_date || null, b.scheduled_time || null, req.user.id]
+     b.description || null, scheduled, b.scheduled_date || null, b.scheduled_time || null, req.user.id, assignedUserId]
   );
   await db.q('UPDATE calls SET root_call_id = id WHERE id = $1', [call.id]);
   await syncCustomerEmail(req.companyId, call.customer_name, customerEmail);
@@ -332,7 +380,13 @@ app.post('/app/calls', async (req, res) => {
 });
 
 async function loadCall(req, res, next) {
-  const call = await db.one('SELECT * FROM calls WHERE id = $1 AND company_id = $2', [req.params.id, req.companyId]);
+  // The visibility rule lives here, so every call-scoped route shares it:
+  // a tech asking for another tech's call — or an unassigned call — gets a
+  // plain 404, never a leak that the call exists. Owner/admin are unrestricted.
+  const call = await db.one(
+    `SELECT c.*, u.name AS assignee_name FROM calls c LEFT JOIN users u ON u.id = c.assigned_user_id
+     WHERE c.id = $1 AND c.company_id = $2${assigneeClause(3, 'c.')}`,
+    [req.params.id, req.companyId, techScopeId(req.user)]);
   if (!call) return res.status(404).send('Call not found.');
   req.call = call;
   next();
@@ -341,7 +395,7 @@ async function loadCall(req, res, next) {
 app.get('/app/calls/:id/edit', loadCall, async (req, res) => {
   const customerEmail = await customerEmailOnFile(req.companyId, req.call.customer_name, req.call.customer_email);
   const call = { ...req.call, customer_email: customerEmail };
-  res.send(views.callFormPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), call, prefill: null }));
+  res.send(views.callFormPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), call, prefill: null, assignees: await companyUsers(req.companyId), canAssign: canAssign(req.user) }));
 });
 
 app.post('/app/calls/:id/edit', loadCall, async (req, res) => {
@@ -352,11 +406,15 @@ app.post('/app/calls/:id/edit', loadCall, async (req, res) => {
   let time = b.scheduled_time || null;
   if (b.unschedule) { status = 'bucket'; date = null; time = null; }
   else if (date && status === 'bucket') status = 'scheduled';
+  // Assignment changes are owner/admin only. A tech's submitted assignee is
+  // ignored — the existing value stands — so a tech can still make legitimate
+  // edits to their own assigned calls without ever reassigning work.
+  const assignedUserId = canAssign(req.user) ? await resolveAssignee(req.companyId, b.assigned_user_id) : req.call.assigned_user_id;
   await db.q(
     `UPDATE calls SET customer_name=$1, address=$2, phone=$3, customer_email=$4, poc_name=$5, poc_phone=$6, description=$7,
-       status=$8, scheduled_date=$9, scheduled_time=$10 WHERE id=$11 AND company_id=$12`,
+       status=$8, scheduled_date=$9, scheduled_time=$10, assigned_user_id=$11 WHERE id=$12 AND company_id=$13`,
     [b.customer_name, b.address || null, b.phone || null, customerEmail, b.poc_name || null, b.poc_phone || null,
-     b.description || null, status, date, time, req.call.id, req.companyId]
+     b.description || null, status, date, time, assignedUserId, req.call.id, req.companyId]
   );
   await syncCustomerEmail(req.companyId, b.customer_name, customerEmail);
   res.redirect('/app?msg=' + encodeURIComponent('Call saved.'));
@@ -431,6 +489,13 @@ app.post('/app/native-positions', async (req, res) => {
   const lng = Number(b.lng);
   if (!callId || !Number.isFinite(lat) || !Number.isFinite(lng)) {
     return res.status(400).json({ error: 'call_id, lat and lng are required' });
+  }
+  // Same visibility rule as loadCall: a tech may only post positions for a
+  // trip on their own assigned call. (Trips are created by the gated
+  // start-travel, so this is defense in depth against forged posts.)
+  if (req.user.role === 'tech') {
+    const call = await db.one('SELECT assigned_user_id FROM calls WHERE id=$1 AND company_id=$2', [callId, req.companyId]);
+    if (!call || call.assigned_user_id !== req.user.id) return res.status(404).json({ error: 'no open trip' });
   }
   const trip = await db.one('SELECT * FROM trips WHERE company_id=$1 AND call_id=$2 AND ended_at IS NULL ORDER BY id DESC LIMIT 1', [req.companyId, callId]);
   if (!trip) return res.status(404).json({ error: 'no open trip' });
@@ -512,10 +577,11 @@ app.post('/app/calls/:id/report', loadCall, async (req, res) => {
       const followUpEmail = await customerEmailOnFile(req.companyId, req.call.customer_name, req.call.customer_email);
       const nc = await db.one(
         `INSERT INTO calls (company_id, customer_name, address, phone, customer_email, poc_name, poc_phone, description,
-           status, scheduled_date, root_call_id, parent_call_id, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'scheduled',$9,$10,$11,$12) RETURNING *`,
+           status, scheduled_date, root_call_id, parent_call_id, created_by, assigned_user_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'scheduled',$9,$10,$11,$12,$13) RETURNING *`,
         [req.companyId, req.call.customer_name, req.call.address, req.call.phone, followUpEmail, req.call.poc_name,
-         req.call.poc_phone, b.follow_up_description || req.call.description, b.follow_up_date, rootId, req.call.id, req.user.id]
+         req.call.poc_phone, b.follow_up_description || req.call.description, b.follow_up_date, rootId, req.call.id, req.user.id,
+         req.call.assigned_user_id]
       );
       await syncCustomerEmail(req.companyId, nc.customer_name, nc.customer_email);
       void nc;
@@ -665,7 +731,10 @@ app.post('/pay/:token/simulate', async (req, res) => {
 // --- Completed / Customers ---------------------------------------------------
 app.get('/app/completed', async (req, res) => {
   const rows = await db.many(
-    "SELECT * FROM calls WHERE company_id = $1 AND status = 'completed' ORDER BY completed_at DESC NULLS LAST, id DESC", [req.companyId]);
+    `SELECT c.*, u.name AS assignee_name FROM calls c LEFT JOIN users u ON u.id = c.assigned_user_id
+     WHERE c.company_id = $1 AND c.status = 'completed'${assigneeClause(2, 'c.')}
+     ORDER BY c.completed_at DESC NULLS LAST, c.id DESC`,
+    [req.companyId, techScopeId(req.user)]);
   const out = [];
   for (const call of rows) {
     const inv = await invoiceFor(call);
@@ -728,7 +797,13 @@ app.post('/app/customers/:name/email', auth.requireRole('owner', 'admin'), async
 
 app.get('/app/customers/:name', async (req, res) => {
   const name = req.params.name;
-  const calls = await db.many('SELECT * FROM calls WHERE company_id = $1 AND customer_name = $2 ORDER BY id DESC', [req.companyId, name]);
+  // The customer directory stays company-wide, but the per-customer job list
+  // follows the same visibility rule as everywhere else: a tech sees only
+  // their own jobs, never another tech's work via a customer page.
+  const calls = await db.many(
+    `SELECT c.*, u.name AS assignee_name FROM calls c LEFT JOIN users u ON u.id = c.assigned_user_id
+     WHERE c.company_id = $1 AND c.customer_name = $2${assigneeClause(3, 'c.')} ORDER BY c.id DESC`,
+    [req.companyId, name, techScopeId(req.user)]);
   const customer = await getCustomerRecord(req.companyId, name);
   if (!calls.length && !customer) return res.status(404).send('Customer not found.');
   res.send(views.customerDetailPage({
