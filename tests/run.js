@@ -4,8 +4,8 @@
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 
-const files = ['tiers.test.js', 'billing-tiers.test.js', 'views-tiers.test.js'];
-if (process.env.RISE_TEST_DATABASE_URL) files.push('http-tiers.test.js');
+const files = ['tiers.test.js', 'billing-tiers.test.js', 'views-tiers.test.js', 'views-dispatch.test.js'];
+if (process.env.RISE_TEST_DATABASE_URL) files.push('http-tiers.test.js', 'http-dispatch.test.js');
 
 let passed = 0;
 for (const f of files) {
