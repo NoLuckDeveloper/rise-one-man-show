@@ -1,0 +1,44 @@
+# Render Blueprint for Rise One Man Show Service.
+# In the Render Dashboard: New + -> Blueprint -> connect this repo -> Apply.
+# Then set the secret env vars marked sync:false in the service settings.
+services:
+  - type: web
+    name: rise-one-man-show
+    runtime: node
+    plan: starter # $7/mo — always on, no spin-down (required for paying customers)
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: rise-db
+          property: connectionString
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: APP_BASE_URL
+        value: https://riseonemanshow.com
+      # Set the four Stripe vars below in the Render dashboard after creating
+      # the product/price/webhook in Stripe (see README). Until then the app
+      # boots in TEST MODE billing.
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false
+      - key: STRIPE_PRICE_ID
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: PLATFORM_ADMIN_EMAIL
+        sync: false
+      - key: PLATFORM_ADMIN_PASSWORD
+        sync: false
+      - key: SEED_DEMO
+        value: "false"
+
+databases:
+  - name: rise-db
+    plan: basic-256mb # ~$6/mo starter Postgres; upgrade as data grows
+    postgresMajorVersion: "16"
