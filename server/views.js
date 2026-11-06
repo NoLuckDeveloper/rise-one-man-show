@@ -20,6 +20,41 @@ function paidStamp(call) {
   return `<p class="paid-stamp">✓ PAID — ${esc(payMethodLabel(call.payment_method))}${when}${ref}</p>`;
 }
 
+// Company profile (Settings -> Company profile): the business's own logo and
+// contact block, shown on invoices and proposals. profile is
+// { name, address, phone, email, logoDataUrl } — every field optional; a
+// missing logo or contact line simply renders nothing. logoDataUrl is a
+// data URL stored in the database, inlined straight into the img src.
+function profileBlock(profile) {
+  if (!profile) return '';
+  const contact = [profile.address, profile.phone, profile.email].filter(Boolean);
+  return `<div class="company-profile">
+    ${profile.logoDataUrl ? `<img class="company-logo" src="${esc(profile.logoDataUrl)}" alt="${esc(profile.name || 'Company logo')}">` : ''}
+    <div class="company-profile-name">${esc(profile.name || '')}</div>
+    ${contact.map((c) => `<div class="muted">${esc(c)}</div>`).join('')}
+  </div>`;
+}
+
+function proposalStatusPill(status) {
+  const map = {
+    draft: ['Draft', 'pill bucket'],
+    sent: ['Sent', 'pill sched'],
+    approved: ['Approved', 'pill done'],
+    changes_requested: ['Changes requested', 'pill warn'],
+  };
+  const [label, cls] = map[status] || [status, 'pill'];
+  return `<span class="${cls}">${label}</span>`;
+}
+
+function signatureBlock(proposal) {
+  if (!proposal || !proposal.signature_data_url) return '';
+  const when = proposal.signed_at ? new Date(proposal.signed_at).toLocaleString() : '';
+  return `<div class="signature-block">
+    <div class="muted">Signed${when ? ' ' + esc(when) : ''}</div>
+    <img class="signature-img" src="${proposal.signature_data_url}" alt="Customer signature">
+  </div>`;
+}
+
 function invoiceEmailStamp(call) {
   if (!call || !call.invoice_emailed_at) return '';
   const recipient = call.invoice_email_recipient ? ` to ${esc(call.invoice_email_recipient)}` : '';
@@ -297,7 +332,7 @@ module.exports = { layout, esc, landingPage, loginPage, signupPage, schedulePage
 
 // --- Job run screen --------------------------------------------------------
 
-function jobPage({ user, sub, company, flash, call, report, openPunch, openTrip, chainHours, chainMiles, invoiceReady }) {
+function jobPage({ user, sub, company, flash, call, report, openPunch, openTrip, chainHours, chainMiles, invoiceReady, proposals = [], canManage = false }) {
   const phase = call.status;
   let actions = '';
   if (phase === 'bucket' || phase === 'scheduled') {
@@ -339,6 +374,29 @@ function jobPage({ user, sub, company, flash, call, report, openPunch, openTrip,
       </div>`;
   }
 
+  // Proposals are owner/admin only — techs never see this section, and
+  // proposal pages themselves are gated the same way server-side.
+  const proposalSection = !canManage ? '' : `
+  <section class="card"><h3>Proposals</h3>
+    ${proposals.length ? proposals.map((p) => `
+      <div class="line proposal-line">
+        <div>
+          <strong>${money(p.totals ? p.totals.totalCents : 0)}</strong> ${proposalStatusPill(p.status)}
+          <span class="muted">${p.display_mode === 'total_only' ? '· Total only' : '· Itemized'}${p.sent_at ? ' · Sent ' + new Date(p.sent_at).toLocaleDateString() : ''}</span>
+          ${p.customer_note ? `<div class="muted">Note: ${esc(p.customer_note)}</div>` : ''}
+          ${p.status === 'changes_requested' && p.customer_decision_note ? `<div><strong>Customer asked for changes:</strong> ${esc(p.customer_decision_note)}</div>` : ''}
+          ${signatureBlock(p)}
+        </div>
+        <div class="row-actions">
+          <a class="btn small" href="/app/calls/${call.id}/proposals/${p.id}">View</a>
+          ${(p.status === 'draft' || p.status === 'changes_requested') ? `<a class="btn small" href="/app/calls/${call.id}/proposals/${p.id}/edit">Edit</a>` : ''}
+          ${p.status === 'draft' ? `<form method="post" action="/app/calls/${call.id}/proposals/${p.id}/send" class="inline"><button class="btn small teal" type="submit">Send</button></form>` : ''}
+          ${p.status === 'changes_requested' ? `<form method="post" action="/app/calls/${call.id}/proposals/${p.id}/send" class="inline"><button class="btn small teal" type="submit">Resend</button></form>` : ''}
+        </div>
+      </div>`).join('') : '<p class="muted">No proposals yet for this call.</p>'}
+    <div class="row-actions"><a class="btn small teal" href="/app/calls/${call.id}/proposals/new">+ New proposal</a></div>
+  </section>`;
+
   const body = `
   <section class="card">
     <div class="call-head"><h2>${esc(call.customer_name)} — ${esc(call.description || 'Job')}</h2> ${statusPill(call)}</div>
@@ -351,8 +409,141 @@ function jobPage({ user, sub, company, flash, call, report, openPunch, openTrip,
       <a class="btn small" href="/app/calls/${call.id}/edit">Edit call</a>
       <a class="btn small" href="/app">Back to schedule</a>
     </div>
-  </section>`;
+  </section>
+  ${proposalSection}`;
   return layout({ title: call.customer_name, user, sub, company, flash, body });
+}
+
+// --- Proposals (owner/admin in-app; public page below) -----------------------
+
+function proposalFormPage({ user, sub, company, flash, call, proposal, settings }) {
+  const p = proposal || {};
+  const items = Array.isArray(p.items) ? p.items : [];
+  const editing = !!proposal;
+  const itemRows = (items.length ? items : [{ qty: '', description: '', unitCostCents: '' }]).map((it) => `
+    <div class="part-row">
+      <input name="item_qty" type="number" step="any" min="0" placeholder="Qty" value="${it.qty !== undefined && it.qty !== '' ? esc(it.qty) : ''}">
+      <input name="item_desc" placeholder="Description" value="${esc(it.description || '')}">
+      <input name="item_cost" inputmode="decimal" placeholder="Unit cost $" value="${it.unitCostCents !== undefined && it.unitCostCents !== '' ? (Number(it.unitCostCents) / 100).toFixed(2) : ''}">
+      <button type="button" class="btn small danger" data-remove-part>✕</button>
+    </div>`).join('');
+  const body = `
+  <section class="card">
+    <h2>${editing ? 'Edit proposal' : 'New proposal'}</h2>
+    <p><strong>${esc(call.customer_name)}</strong> — ${esc(call.description || '')}</p>
+    ${p.status === 'changes_requested' && p.customer_decision_note ? `<p><strong>Customer asked for changes:</strong> ${esc(p.customer_decision_note)}</p>` : ''}
+    <form method="post" action="${editing ? `/app/calls/${call.id}/proposals/${p.id}/edit` : `/app/calls/${call.id}/proposals`}">
+      <fieldset><legend>Line items — Quantity · Description · Unit cost</legend>
+        <div id="parts">${itemRows}</div>
+        <button type="button" class="btn small" id="add-part">+ Add another line</button>
+      </fieldset>
+      <p class="muted">Tax (${esc(settings ? settings.tax_percent : 0)}%) is added automatically from Settings → Invoicing.</p>
+      <fieldset><legend>What the customer sees</legend>
+        <label class="check"><input type="radio" name="display_mode" value="itemized" ${p.display_mode !== 'total_only' ? 'checked' : ''}> Itemized — every line, then the total</label>
+        <label class="check"><input type="radio" name="display_mode" value="total_only" ${p.display_mode === 'total_only' ? 'checked' : ''}> Total only — just the final amount</label>
+      </fieldset>
+      <label>Note to the customer (optional) <textarea name="customer_note" rows="3">${esc(p.customer_note || '')}</textarea></label>
+      <button class="btn primary wide" type="submit">${editing ? 'Save proposal' : 'Create proposal'}</button>
+    </form>
+    <div class="row-actions"><a class="btn small" href="/app/calls/${call.id}">Back to job</a></div>
+  </section>`;
+  return layout({ title: editing ? 'Edit proposal' : 'New proposal', user, sub, company, flash, body });
+}
+
+function proposalDetailPage({ user, sub, company, flash, call, proposal, totals, settings, recipientEmail, resendConfigured }) {
+  const p = proposal;
+  const itemized = p.display_mode !== 'total_only';
+  const rows = itemized ? totals.lines.map((l) => `<tr><td>${esc(l.description)} — ${l.qty} × ${money(l.unitCostCents)}</td><td class="r">${money(l.lineCents)}</td></tr>`).join('') : '';
+  let actions = '';
+  if (p.status === 'draft') {
+    actions = `<form method="post" action="/app/calls/${call.id}/proposals/${p.id}/send" class="inline">
+        <button class="btn teal" type="submit">Send to customer</button></form>
+      <a class="btn" href="/app/calls/${call.id}/proposals/${p.id}/edit">Edit</a>`;
+  } else if (p.status === 'changes_requested') {
+    actions = `<form method="post" action="/app/calls/${call.id}/proposals/${p.id}/send" class="inline">
+        <button class="btn teal" type="submit">Resend to customer</button></form>
+      <a class="btn" href="/app/calls/${call.id}/proposals/${p.id}/edit">Edit</a>`;
+  }
+  const body = `
+  <section class="card">
+    <h2>Proposal ${proposalStatusPill(p.status)}</h2>
+    <p><strong>${esc(call.customer_name)}</strong> — ${esc(call.description || '')}</p>
+    ${p.customer_note ? `<p><strong>Note sent:</strong> ${esc(p.customer_note)}</p>` : ''}
+    ${p.status === 'changes_requested' && p.customer_decision_note ? `<p><strong>Customer asked for changes:</strong> ${esc(p.customer_decision_note)}</p>` : ''}
+    ${p.sent_at ? `<p class="muted">Sent ${new Date(p.sent_at).toLocaleString()}${p.emailed_to ? ' to ' + esc(p.emailed_to) : ''}</p>` : ''}
+    ${signatureBlock(p)}
+    <table class="inv-table">
+      <tr><th>Description</th><th class="r">Amount</th></tr>
+      ${itemized ? rows : `<tr><td>Proposal total (customer sees total only)</td><td class="r">${money(totals.totalCents)}</td></tr>`}
+      ${itemized ? `<tr><td>Subtotal</td><td class="r">${money(totals.subtotalCents)}</td></tr>
+      <tr><td>Tax (${esc(settings ? settings.tax_percent : 0)}%)</td><td class="r">${money(totals.taxCents)}</td></tr>` : ''}
+      <tr class="total"><td>Total</td><td class="r">${money(totals.totalCents)}</td></tr>
+    </table>
+    ${!resendConfigured && (p.status === 'draft' || p.status === 'changes_requested') ? '<p class="muted">Email sending is not configured on the server yet (needs RESEND_API_KEY) — sending will show a notice until it is.</p>' : ''}
+    <div class="row-actions">${actions}
+      <a class="btn small" href="/app/calls/${call.id}">Back to job</a>
+    </div>
+    ${recipientEmail ? `<p class="muted">Customer email on file: ${esc(recipientEmail)}</p>` : '<p class="muted">No customer email on file — add one on the call or Customers page before sending.</p>'}
+  </section>`;
+  return layout({ title: 'Proposal', user, sub, company, flash, body });
+}
+
+// --- Public proposal page (/proposal/:token, no login) ------------------------
+// The customer sees the company's logo/info, the proposal (lines or total
+// only, per the owner's display choice), and — while it is still awaiting a
+// decision — two buttons: Approve (signature required) and Request changes
+// (a note is required). After a decision, the buttons are gone and the
+// recorded decision (and signature, when approved) is shown instead.
+function proposalPage({ company, call, proposal, totals, profile, flash }) {
+  const p = proposal;
+  const itemized = p.display_mode !== 'total_only';
+  const decided = p.status === 'approved' || p.status === 'changes_requested';
+  const rows = itemized ? totals.lines.map((l) => `<tr><td>${esc(l.description)} — ${l.qty} × ${money(l.unitCostCents)}</td><td class="r">${money(l.lineCents)}</td></tr>`).join('') : '';
+  let decision = '';
+  if (p.status === 'approved') {
+    decision = `<div class="flash ok">✓ Approved${p.decided_at ? ' on ' + esc(new Date(p.decided_at).toLocaleString()) : ''} — thank you!</div>${signatureBlock(p)}`;
+  } else if (p.status === 'changes_requested') {
+    decision = `<div class="flash">Changes requested${p.decided_at ? ' on ' + esc(new Date(p.decided_at).toLocaleString()) : ''} — we've noted what to adjust and will send a revised proposal.</div>
+      ${p.customer_decision_note ? `<p><strong>Your note:</strong> ${esc(p.customer_decision_note)}</p>` : ''}`;
+  }
+  const actions = decided ? '' : `
+    <form method="post" action="/proposal/${esc(p.token)}/approve" id="approve-form" class="card inner">
+      <h3>Approve this proposal</h3>
+      <p class="muted">Sign below to approve. Your signature and the date &amp; time are recorded with the proposal.</p>
+      <canvas id="sig-pad" class="sig-pad" width="420" height="160"></canvas>
+      <input type="hidden" name="signature_data_url" id="sig-data" value="">
+      <p class="err-text" id="sig-error" hidden>Please sign in the box above before approving.</p>
+      <div class="row-actions">
+        <button type="button" class="btn small" id="sig-clear">Clear signature</button>
+        <button class="btn green" type="submit">✓ Approve — ${money(totals.totalCents)}</button>
+      </div>
+    </form>
+    <form method="post" action="/proposal/${esc(p.token)}/request-changes" class="card inner">
+      <h3>Request changes</h3>
+      <label>What should change? <textarea name="note" rows="3" required placeholder="Tell us what to adjust…"></textarea></label>
+      <button class="btn" type="submit">Request changes</button>
+    </form>`;
+  const body = `
+  <section class="invoice">
+    <div class="inv-head">
+      <div><img class="logo-img" src="/logo-mark.png" alt="Rise One Man Show"><strong>RISE ONE MAN SHOW</strong></div>
+      <div><h2>PROPOSAL</h2><p>${esc(company.name)}</p></div>
+    </div>
+    ${profileBlock(profile)}
+    <p><strong>Job:</strong> ${esc(call.customer_name)} — ${esc(call.description || '')}</p>
+    ${p.customer_note ? `<p>${esc(p.customer_note)}</p>` : ''}
+    <table class="inv-table">
+      <tr><th>Description</th><th class="r">Amount</th></tr>
+      ${itemized ? rows : ''}
+      ${itemized ? `<tr><td>Subtotal</td><td class="r">${money(totals.subtotalCents)}</td></tr>
+      <tr><td>Tax</td><td class="r">${money(totals.taxCents)}</td></tr>` : ''}
+      <tr class="total"><td>Total</td><td class="r">${money(totals.totalCents)}</td></tr>
+    </table>
+    ${decision}
+    ${actions}
+    <p class="muted" style="text-align:center;margin-top:18px">Powered by Rise One Man Show</p>
+  </section>`;
+  return layout({ title: 'Proposal', flash, body });
 }
 
 // --- Job report --------------------------------------------------------------
@@ -424,7 +615,7 @@ function reportPage({ user, sub, company, flash, call, report, chainHours, chain
 
 // --- Invoice -----------------------------------------------------------------
 
-function invoicePage({ user, sub, company, settings, rootCall, inv, print, payUrl, recipientEmail, canManage, resendConfigured }) {
+function invoicePage({ user, sub, company, settings, rootCall, inv, print, payUrl, recipientEmail, canManage, resendConfigured, profile }) {
   const paid = rootCall.payment_status === 'paid';
   let paymentBlock = '';
   if (paid) {
@@ -467,6 +658,7 @@ function invoicePage({ user, sub, company, settings, rootCall, inv, print, payUr
       <div><img class="logo-img" src="/logo-mark.png" alt="Rise One Man Show"><strong>RISE ONE MAN SHOW</strong></div>
       <div><h2>INVOICE</h2><p>${esc(company.name)}</p></div>
     </div>
+    ${profileBlock(profile)}
     <p><strong>Bill to:</strong> ${esc(rootCall.customer_name)}<br>${esc(rootCall.address || '')}</p>
     <p><strong>Job:</strong> ${esc(rootCall.description || '')} · ${rootCall.completed_at ? isoDate(rootCall.completed_at) : ''}</p>
     <table class="inv-table">
@@ -487,7 +679,7 @@ function invoicePage({ user, sub, company, settings, rootCall, inv, print, payUr
 
 // --- Public invoice pay page (/pay/:token, no login) -------------------------
 
-function payPage({ company, rootCall, inv, settings, state, testMode, justPaid, flash }) {
+function payPage({ company, rootCall, inv, settings, state, testMode, justPaid, flash, profile }) {
   let action = '';
   if (state === 'paid') {
     action = `${justPaid ? '<div class="flash ok">Payment received — thank you!</div>' : ''}${paidStamp(rootCall)}`;
@@ -511,6 +703,7 @@ function payPage({ company, rootCall, inv, settings, state, testMode, justPaid, 
       <div><img class="logo-img" src="/logo-mark.png" alt="Rise One Man Show"><strong>RISE ONE MAN SHOW</strong></div>
       <div><h2>INVOICE</h2><p>${esc(company.name)}</p></div>
     </div>
+    ${profileBlock(profile)}
     <p><strong>Bill to:</strong> ${esc(rootCall.customer_name)}<br>${esc(rootCall.address || '')}</p>
     <p><strong>Job:</strong> ${esc(rootCall.description || '')} · ${rootCall.completed_at ? isoDate(rootCall.completed_at) : ''}</p>
     <table class="inv-table">
@@ -675,6 +868,19 @@ function settingsPage({ user, sub, company, flash, s }) {
   const body = `
   <section class="card"><h2>Settings</h2>
     <form method="post" action="/app/settings">
+      <fieldset><legend>Company profile — shown on invoices &amp; proposals</legend>
+        <label>Company name (blank = ${esc(company.name)}) <input name="profile_display_name" value="${esc(s.profile_display_name || '')}" placeholder="${esc(company.name)}"></label>
+        <label>Address <input name="profile_address" value="${esc(s.profile_address || '')}"></label>
+        <label>Phone <input name="profile_phone" value="${esc(s.profile_phone || '')}"></label>
+        <label>Contact email <input type="email" name="profile_email" value="${esc(s.profile_email || '')}"></label>
+        <label>Logo
+          <input type="file" accept="image/*" data-photo-input="logo_data_url">
+        </label>
+        <input type="hidden" name="logo_data_url">
+        <div class="thumb-row">${s.logo_data_url ? `<img class="thumb" src="${esc(s.logo_data_url)}" alt="Current logo">` : '<span class="muted">No logo uploaded yet — invoices and proposals work fine without one.</span>'}</div>
+        ${s.logo_data_url ? '<label class="check"><input type="checkbox" name="remove_logo" value="1"> Remove the current logo</label>' : ''}
+        <p class="muted">PNG, JPG, GIF or WebP, up to 5 MB. The image is resized on upload.</p>
+      </fieldset>
       <fieldset><legend>Invoicing</legend>
         <label>Hourly rate ($) <input name="hourly_rate" inputmode="decimal" value="${(s.hourly_rate_cents / 100).toFixed(2)}"></label>
         <label>Tax % <input name="tax_percent" inputmode="decimal" value="${esc(s.tax_percent)}"></label>
@@ -803,5 +1009,6 @@ module.exports = {
   layout, esc, landingPage, loginPage, signupPage, schedulePage, callFormPage,
   statusPill, callCard, jobPage, reportPage, invoicePage, completedPage,
   customersPage, customerDetailPage, logPage, settingsPage, usersPage,
-  billingPage, platformPage, payPage,
+  billingPage, platformPage, payPage, profileBlock, proposalStatusPill,
+  signatureBlock, proposalFormPage, proposalDetailPage, proposalPage,
 };

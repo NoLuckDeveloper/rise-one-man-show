@@ -195,3 +195,67 @@ document.querySelectorAll('[data-photo-multi]').forEach((input) => {
     hidden.value = JSON.stringify(photos);
   });
 });
+
+// --- Signature pad (public proposal approval) ---------------------------------
+// Canvas drawing with pointer events; the Approve button stays blocked until
+// the customer has actually drawn something. The server re-validates the
+// captured image, so clearing this client check alone cannot approve.
+const sigPad = document.getElementById('sig-pad');
+if (sigPad) {
+  const ctx = sigPad.getContext('2d');
+  ctx.strokeStyle = '#111827';
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  let drawing = false;
+  let signed = false;
+  let last = null;
+  const pos = (e) => {
+    const r = sigPad.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (sigPad.width / r.width), y: (e.clientY - r.top) * (sigPad.height / r.height) };
+  };
+  sigPad.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    drawing = true;
+    last = pos(e);
+    sigPad.setPointerCapture(e.pointerId);
+  });
+  sigPad.addEventListener('pointermove', (e) => {
+    if (!drawing || !last) return;
+    const p = pos(e);
+    ctx.beginPath();
+    ctx.moveTo(last.x, last.y);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    last = p;
+    signed = true;
+    const err = document.getElementById('sig-error');
+    if (err) err.hidden = true;
+  });
+  const stop = () => { drawing = false; last = null; };
+  sigPad.addEventListener('pointerup', stop);
+  sigPad.addEventListener('pointercancel', stop);
+  const clearBtn = document.getElementById('sig-clear');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      ctx.clearRect(0, 0, sigPad.width, sigPad.height);
+      signed = false;
+      const data = document.getElementById('sig-data');
+      if (data) data.value = '';
+    });
+  }
+  const approveForm = document.getElementById('approve-form');
+  if (approveForm) {
+    approveForm.addEventListener('submit', (e) => {
+      if (!signed) {
+        e.preventDefault();
+        const err = document.getElementById('sig-error');
+        if (err) err.hidden = false;
+        sigPad.focus();
+        return;
+      }
+      const data = document.getElementById('sig-data');
+      if (data) data.value = sigPad.toDataURL('image/png');
+    });
+  }
+}

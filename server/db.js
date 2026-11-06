@@ -240,6 +240,53 @@ ON CONFLICT (company_id, customer_name) DO NOTHING;
 ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS stripe_account_id TEXT;
 ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS stripe_charges_enabled BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- Company profile (Settings -> Company profile): the display name,
+-- address, phone and contact email shown on invoices and proposals, plus
+-- the uploaded logo. A blank display name falls back to companies.name.
+-- The logo is stored as a data URL in logo_data_url (same pattern as
+-- proposal signatures), so it survives redeploys on hosts with an
+-- ephemeral filesystem. logo_path is legacy and unused: logos used to be
+-- files under public/uploads/logos/ served statically, which vanished on
+-- redeploy; nothing reads or writes it anymore.
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS profile_display_name TEXT;
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS profile_address TEXT;
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS profile_phone TEXT;
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS profile_email TEXT;
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS logo_path TEXT;
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS logo_data_url TEXT;
+
+-- Customer proposals. One proposal belongs to one call; the public
+-- /proposal/:token page is keyed by the unguessable token (same pattern as
+-- the invoice pay_token). Line items live in the items JSONB column, in the
+-- same style as job_reports.parts: [{description, qty, unitCostCents}].
+-- display_mode: 'itemized' (customer sees every line) or 'total_only'
+-- (customer sees just the final amount). An approval is only valid with a
+-- captured signature: signature_data_url holds the signature-pad PNG data
+-- URL (stored in the database so it survives deploys, unlike a file), and
+-- signed_at is stamped server-side at approval time. Request-changes needs
+-- no signature; its note is stored in customer_decision_note.
+CREATE TABLE IF NOT EXISTS proposals (
+  id                    SERIAL PRIMARY KEY,
+  company_id            INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  call_id               INTEGER NOT NULL REFERENCES calls(id) ON DELETE CASCADE,
+  token                 TEXT NOT NULL UNIQUE,
+  status                TEXT NOT NULL DEFAULT 'draft', -- draft|sent|approved|changes_requested
+  display_mode          TEXT NOT NULL DEFAULT 'itemized', -- itemized|total_only
+  items                 JSONB NOT NULL DEFAULT '[]',
+  customer_note         TEXT,
+  customer_decision_note TEXT,
+  signature_data_url    TEXT,
+  signed_at             TIMESTAMPTZ,
+  sent_at               TIMESTAMPTZ,
+  decided_at            TIMESTAMPTZ,
+  emailed_at            TIMESTAMPTZ,
+  emailed_to            TEXT,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_proposals_company ON proposals(company_id);
+CREATE INDEX IF NOT EXISTS idx_proposals_call ON proposals(call_id);
+
 -- Native-app GPS positions for open travel trips (background tracking).
 -- One row per fix; trip miles accumulate from consecutive points server-side.
 CREATE TABLE IF NOT EXISTS trip_positions (

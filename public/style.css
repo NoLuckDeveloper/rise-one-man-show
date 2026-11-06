@@ -135,3 +135,14 @@ table.kv td:first-child { color: var(--muted); }
 
 .site-footer { text-align: center; padding: 18px 12px 26px; font-size: 0.85rem; color: var(--muted, #8fa3b8); }
 .site-footer a { color: inherit; text-decoration: underline; }
+
+/* Company profile + proposals */
+.pill.warn { background: #f59e0b; color: #231a00; }
+.company-profile { padding: 14px 0 4px; border-bottom: 1px solid #eee; margin-bottom: 6px; }
+.company-logo { max-height: 72px; max-width: 240px; object-fit: contain; display: block; margin-bottom: 8px; }
+.company-profile-name { font-size: 18px; font-weight: 800; }
+.sig-pad { display: block; width: 100%; max-width: 420px; height: 160px; background: #fff; border: 2px solid #94a3b8; border-radius: 8px; touch-action: none; cursor: crosshair; }
+.err-text { color: #dc2626; font-weight: 700; }
+.signature-block { margin-top: 10px; }
+.signature-img { max-width: 260px; max-height: 100px; background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 4px; }
+.proposal-line { align-items: flex-start; justify-content: space-between; }

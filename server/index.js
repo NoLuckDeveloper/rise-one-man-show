@@ -1,5 +1,6 @@
 'use strict';
 const path = require('path');
+const crypto = require('crypto');
 const express = require('express');
 const db = require('./db');
 const auth = require('./auth');
@@ -7,7 +8,7 @@ const billing = require('./billing');
 const payments = require('./payments');
 const mailer = require('./mailer');
 const views = require('./views');
-const { esc, dollarsToCents, hoursBetween, computeInvoice, isoDate, buildReportCsv, haversineMiles } = require('./util');
+const { esc, dollarsToCents, hoursBetween, computeInvoice, computeProposal, parseImageDataUrl, isoDate, buildReportCsv, haversineMiles } = require('./util');
 
 const app = express();
 
@@ -140,6 +141,42 @@ async function invoiceFor(call) {
   return { inv, root, leaf, settings };
 }
 
+// --- Company profile + logo --------------------------------------------------
+// The profile is the company's own branding for invoices and proposals:
+// display name (blank falls back to companies.name), address, phone,
+// contact email, and the uploaded logo. The logo is stored as a data URL
+// in company_settings.logo_data_url (same pattern as proposal signatures),
+// so it survives redeploys on hosts with an ephemeral filesystem.
+function companyProfile(company, settings) {
+  const s = settings || {};
+  return {
+    name: (s.profile_display_name || '').trim() || company.name,
+    address: s.profile_address || '',
+    phone: s.profile_phone || '',
+    email: s.profile_email || '',
+    logoDataUrl: s.logo_data_url || '',
+  };
+}
+
+// The email header inlines the logo data URL directly; a data URL is
+// self-contained, so no absolute URL is needed.
+function profileForEmail(profile) {
+  if (!profile) return null;
+  return { ...profile, logoUrl: profile.logoDataUrl || '' };
+}
+
+const LOGO_MAX_BYTES = 5 * 1024 * 1024;
+
+// Validate a logo data URL (PNG/JPG/GIF/WebP, magic bytes, <= 5 MB) and
+// return the canonical data URL for storage in the database. Throws on
+// invalid input. The canonical form normalizes e.g. image/jpg to
+// image/jpeg, so what is stored is always a valid image data URL.
+function validateCompanyLogo(dataUrl) {
+  const parsed = parseImageDataUrl(dataUrl, { maxBytes: LOGO_MAX_BYTES });
+  if (!parsed) throw new Error('Logo must be a PNG, JPG, GIF or WebP image under 5 MB.');
+  return `data:${parsed.mime};base64,${parsed.bytes.toString('base64')}`;
+}
+
 // --- Customer email records + invoice delivery -------------------------------
 function normalizeEmail(value) {
   const email = String(value || '').trim().toLowerCase();
@@ -215,9 +252,54 @@ async function deliverInvoiceEmail({ company, result }) {
     inv: result.inv,
     settings: result.settings,
     payUrl: payments.payUrl(root),
+    profile: profileForEmail(companyProfile(company, result.settings)),
   });
   await recordInvoiceEmail(root, recipient);
   return { sent: true, reason: null, recipient };
+}
+
+// --- Proposals ---------------------------------------------------------------
+// Totals for a proposal, using the same tax % invoices use.
+function proposalTotals(proposal, settings) {
+  return computeProposal({
+    items: Array.isArray(proposal.items) ? proposal.items : [],
+    taxPercent: Number(settings ? settings.tax_percent : 0),
+  });
+}
+
+function proposalUrl(proposal) {
+  return `${payments.baseUrl()}/proposal/${proposal.token}`;
+}
+
+// Same recipient rule as invoices: the customer record wins, the call's
+// captured email is the fallback.
+async function proposalRecipient(call) {
+  return customerEmailOnFile(call.company_id, call.customer_name, call.customer_email);
+}
+
+// Parse the itemized-lines form (same 3-column shape as report parts).
+function parseProposalItems(body) {
+  const qtys = [].concat(body.item_qty || []);
+  const descs = [].concat(body.item_desc || []);
+  const costs = [].concat(body.item_cost || []);
+  const items = [];
+  for (let i = 0; i < descs.length; i++) {
+    if (!descs[i] && !costs[i]) continue;
+    items.push({ qty: Number(qtys[i] || 0), description: descs[i] || '', unitCostCents: dollarsToCents(costs[i]) });
+  }
+  return items;
+}
+
+// In-app proposal loader: company- AND call-scoped, so a proposal id from
+// another company (or another call) is a plain 404, never a leak.
+async function loadProposal(req, res, next) {
+  const p = await db.one(
+    'SELECT * FROM proposals WHERE id = $1 AND company_id = $2 AND call_id = $3',
+    [req.params.pid, req.companyId, req.call.id]
+  );
+  if (!p) return res.status(404).send('Proposal not found.');
+  req.proposal = p;
+  next();
 }
 
 // Fire-and-forget in spirit (but awaited so tests and serverless-style
@@ -439,9 +521,17 @@ app.get('/app/calls/:id', loadCall, async (req, res) => {
   const openPunch = await db.one('SELECT * FROM punches WHERE company_id = $1 AND call_id = $2 AND clock_out IS NULL ORDER BY id DESC LIMIT 1', [cid, req.call.id]);
   const openTrip = await db.one('SELECT * FROM trips WHERE company_id = $1 AND call_id = $2 AND ended_at IS NULL ORDER BY id DESC LIMIT 1', [cid, req.call.id]);
   const inv = req.call.status === 'completed' ? await invoiceFor(req.call) : null;
+  // Proposals are owner/admin only: techs never see the section, and the
+  // proposal routes themselves are gated the same way server-side.
+  const canManageProposals = ['owner', 'admin'].includes(req.user.role);
+  const proposals = canManageProposals
+    ? await db.many('SELECT * FROM proposals WHERE company_id = $1 AND call_id = $2 ORDER BY id', [cid, req.call.id])
+    : [];
+  for (const p of proposals) p.totals = proposalTotals(p, req.settings);
   res.send(views.jobPage({
     user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), call: req.call,
     report, openPunch, openTrip, chainHours: totals.hours, chainMiles: totals.miles, invoiceReady: !!inv,
+    proposals, canManage: canManageProposals,
   }));
 });
 
@@ -609,6 +699,7 @@ app.get('/app/calls/:id/invoice', loadCall, async (req, res) => {
     recipientEmail,
     canManage: ['owner', 'admin'].includes(req.user.role),
     resendConfigured: mailer.configured(),
+    profile: companyProfile(req.company, result.settings),
   }));
 });
 
@@ -661,6 +752,94 @@ app.post('/app/calls/:id/email-invoice', auth.requireRole('owner', 'admin'), loa
   res.redirect(invoiceUrl + '?msg=' + encodeURIComponent(`Invoice emailed to ${recipient}.`));
 });
 
+// --- Proposals (owner/admin in-app) ------------------------------------------
+// Create/edit/send a proposal for a call. Techs get 403 from requireRole;
+// loadCall 404s for calls outside a tech's visibility, so neither path can
+// reach another company's (or another tech's) proposals.
+app.get('/app/calls/:id/proposals/new', auth.requireRole('owner', 'admin'), loadCall, async (req, res) => {
+  res.send(views.proposalFormPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), call: req.call, proposal: null, settings: req.settings }));
+});
+
+app.post('/app/calls/:id/proposals', auth.requireRole('owner', 'admin'), loadCall, async (req, res) => {
+  const items = parseProposalItems(req.body);
+  if (!items.length) return back(res, `/app/calls/${req.call.id}/proposals/new`, 'err', 'Add at least one line item.');
+  const displayMode = req.body.display_mode === 'total_only' ? 'total_only' : 'itemized';
+  const note = String(req.body.customer_note || '').trim() || null;
+  let proposal = null;
+  for (let attempt = 0; attempt < 2 && !proposal; attempt++) {
+    try {
+      proposal = await db.one(
+        `INSERT INTO proposals (company_id, call_id, token, status, display_mode, items, customer_note)
+         VALUES ($1,$2,$3,'draft',$4,$5,$6) RETURNING *`,
+        [req.companyId, req.call.id, crypto.randomBytes(24).toString('base64url'), displayMode, JSON.stringify(items), note]);
+    } catch (e) {
+      if (e.code !== '23505' || attempt === 1) throw e; // token unique_violation
+    }
+  }
+  res.redirect(`/app/calls/${req.call.id}/proposals/${proposal.id}?msg=` + encodeURIComponent('Proposal created — send it when ready.'));
+});
+
+app.get('/app/calls/:id/proposals/:pid', auth.requireRole('owner', 'admin'), loadCall, loadProposal, async (req, res) => {
+  const recipientEmail = await proposalRecipient(req.call);
+  res.send(views.proposalDetailPage({
+    user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), call: req.call,
+    proposal: req.proposal, totals: proposalTotals(req.proposal, req.settings), settings: req.settings,
+    recipientEmail, resendConfigured: mailer.configured(),
+  }));
+});
+
+app.get('/app/calls/:id/proposals/:pid/edit', auth.requireRole('owner', 'admin'), loadCall, loadProposal, async (req, res) => {
+  if (req.proposal.status !== 'draft' && req.proposal.status !== 'changes_requested') {
+    return back(res, `/app/calls/${req.call.id}/proposals/${req.proposal.id}`, 'err', 'Only a draft or changes-requested proposal can be edited.');
+  }
+  res.send(views.proposalFormPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), call: req.call, proposal: req.proposal, settings: req.settings }));
+});
+
+app.post('/app/calls/:id/proposals/:pid/edit', auth.requireRole('owner', 'admin'), loadCall, loadProposal, async (req, res) => {
+  if (req.proposal.status !== 'draft' && req.proposal.status !== 'changes_requested') {
+    return back(res, `/app/calls/${req.call.id}/proposals/${req.proposal.id}`, 'err', 'Only a draft or changes-requested proposal can be edited.');
+  }
+  const items = parseProposalItems(req.body);
+  if (!items.length) return back(res, `/app/calls/${req.call.id}/proposals/${req.proposal.id}/edit`, 'err', 'Add at least one line item.');
+  const displayMode = req.body.display_mode === 'total_only' ? 'total_only' : 'itemized';
+  const note = String(req.body.customer_note || '').trim() || null;
+  await db.q('UPDATE proposals SET items=$2, display_mode=$3, customer_note=$4, updated_at=now() WHERE id=$1',
+    [req.proposal.id, JSON.stringify(items), displayMode, note]);
+  res.redirect(`/app/calls/${req.call.id}/proposals/${req.proposal.id}?msg=` + encodeURIComponent('Proposal saved.'));
+});
+
+app.post('/app/calls/:id/proposals/:pid/send', auth.requireRole('owner', 'admin'), loadCall, loadProposal, async (req, res) => {
+  const p = req.proposal;
+  const detailUrl = `/app/calls/${req.call.id}/proposals/${p.id}`;
+  if (p.status !== 'draft' && p.status !== 'changes_requested') {
+    return back(res, detailUrl, 'err', 'Only a draft or changes-requested proposal can be sent.');
+  }
+  const recipient = await proposalRecipient(req.call);
+  if (!recipient) return back(res, detailUrl, 'err', 'Add the customer\'s email address first, then send.');
+  if (!mailer.configured()) {
+    return back(res, detailUrl, 'err', 'Email isn\'t configured yet — the server needs a RESEND_API_KEY before proposals can be emailed.');
+  }
+  const totals = proposalTotals(p, req.settings);
+  const profile = companyProfile(req.company, req.settings);
+  try {
+    const owner = await db.one("SELECT * FROM users WHERE company_id = $1 AND role = 'owner' ORDER BY id LIMIT 1", [req.companyId]);
+    await mailer.sendProposalEmail({
+      to: recipient, ownerEmail: owner ? owner.email : null,
+      company: req.company, call: req.call, proposal: p, totals,
+      proposalUrl: proposalUrl(p), profile: profileForEmail(profile),
+    });
+  } catch (e) {
+    console.error('[mailer] proposal email failed:', e.message);
+    return back(res, detailUrl, 'err', 'Proposal email failed to send — ' + e.message);
+  }
+  // Sending (or resending) starts a fresh decision round: the previous
+  // decision, note and signature are cleared; the token stays the same.
+  await db.q(`UPDATE proposals SET status='sent', sent_at=now(), emailed_at=now(), emailed_to=$2,
+      decided_at=NULL, customer_decision_note=NULL, signature_data_url=NULL, signed_at=NULL, updated_at=now()
+    WHERE id=$1`, [p.id, recipient]);
+  res.redirect(detailUrl + '?msg=' + encodeURIComponent(`Proposal sent to ${recipient}.`));
+});
+
 // --- Public invoice pay page ---------------------------------------------------
 // No login: the unguessable pay_token on the chain's root call is the key.
 async function loadPayInvoice(token) {
@@ -694,6 +873,7 @@ app.get('/pay/:token', async (req, res) => {
   res.send(views.payPage({
     company, rootCall: root, inv, settings, state,
     testMode: billing.TEST_MODE, justPaid: req.query.paid === '1', flash: flashFrom(req),
+    profile: companyProfile(company, settings),
   }));
 });
 
@@ -726,6 +906,67 @@ app.post('/pay/:token/simulate', async (req, res) => {
     });
   }
   res.redirect(`/pay/${req.params.token}?paid=1`);
+});
+
+// --- Public proposal page -----------------------------------------------------
+// No login: the unguessable proposal token is the key (same pattern as the
+// invoice pay page). A bad token is a plain 404 — it never says whether a
+// proposal with that token exists for another company.
+async function loadPublicProposal(token) {
+  const proposal = await db.one('SELECT * FROM proposals WHERE token = $1', [token]);
+  if (!proposal) return null;
+  const call = await db.one('SELECT * FROM calls WHERE id = $1 AND company_id = $2', [proposal.call_id, proposal.company_id]);
+  const company = await db.one('SELECT * FROM companies WHERE id = $1', [proposal.company_id]);
+  const settings = await db.one('SELECT * FROM company_settings WHERE company_id = $1', [proposal.company_id]);
+  if (!call || !company || !settings) return null;
+  return { proposal, call, company, settings, totals: proposalTotals(proposal, settings), profile: companyProfile(company, settings) };
+}
+
+app.get('/proposal/:token', async (req, res) => {
+  const data = await loadPublicProposal(req.params.token);
+  if (!data) return res.status(404).send('Proposal not found.');
+  res.send(views.proposalPage({ ...data, flash: flashFrom(req) }));
+});
+
+// Approval requires a signature: the client pad blocks an empty submit, and
+// the server re-validates the captured PNG (format, magic bytes, and a
+// minimum size that rules out a blank canvas). signed_at is stamped
+// server-side at approval time — a client-supplied timestamp is never used.
+const SIGNATURE_MIN_BYTES = 1000;
+app.post('/proposal/:token/approve', async (req, res) => {
+  const data = await loadPublicProposal(req.params.token);
+  if (!data) return res.status(404).send('Proposal not found.');
+  const p = data.proposal;
+  if (p.status !== 'sent') return res.redirect(`/proposal/${req.params.token}`);
+  const sig = parseImageDataUrl(req.body.signature_data_url, { maxBytes: 1024 * 1024, minBytes: SIGNATURE_MIN_BYTES });
+  if (!sig || sig.mime !== 'image/png') {
+    return back(res, `/proposal/${req.params.token}`, 'err', 'A signature is required to approve — please sign in the box above first.');
+  }
+  const updated = await db.q(
+    `UPDATE proposals SET status='approved', signature_data_url=$2, signed_at=now(), decided_at=now(), updated_at=now()
+     WHERE id=$1 AND status='sent'`,
+    [p.id, req.body.signature_data_url]
+  );
+  if (updated.rowCount === 0) return res.redirect(`/proposal/${req.params.token}`);
+  res.redirect(`/proposal/${req.params.token}?msg=` + encodeURIComponent('Proposal approved — thank you!'));
+});
+
+// Request-changes needs no signature — only a note saying what to adjust.
+app.post('/proposal/:token/request-changes', async (req, res) => {
+  const data = await loadPublicProposal(req.params.token);
+  if (!data) return res.status(404).send('Proposal not found.');
+  const p = data.proposal;
+  if (p.status !== 'sent') return res.redirect(`/proposal/${req.params.token}`);
+  const note = String(req.body.note || '').trim();
+  if (!note) {
+    return back(res, `/proposal/${req.params.token}`, 'err', 'Tell us what should change — a short note is required.');
+  }
+  await db.q(
+    `UPDATE proposals SET status='changes_requested', customer_decision_note=$2, decided_at=now(), updated_at=now()
+     WHERE id=$1 AND status='sent'`,
+    [p.id, note]
+  );
+  res.redirect(`/proposal/${req.params.token}?msg=` + encodeURIComponent('Changes requested — the company will send a revised proposal.'));
 });
 
 // --- Completed / Customers ---------------------------------------------------
@@ -969,12 +1210,34 @@ app.get('/app/settings', auth.requireRole('owner', 'admin'), (req, res) => {
 });
 app.post('/app/settings', auth.requireRole('owner', 'admin'), async (req, res) => {
   const b = req.body;
+  // Company profile + logo. A logo upload replaces the stored data URL;
+  // the remove checkbox clears it. A bad logo rejects the whole save so
+  // the settings and the stored logo never disagree about which logo is live.
+  let logoDataUrl = req.settings.logo_data_url || null;
+  try {
+    if (b.remove_logo === '1') {
+      logoDataUrl = null;
+    } else if (b.logo_data_url) {
+      logoDataUrl = validateCompanyLogo(b.logo_data_url);
+    }
+  } catch (e) {
+    return back(res, '/app/settings', 'err', e.message);
+  }
+  const profileEmail = normalizeEmail(b.profile_email);
+  if (b.profile_email && !isEmail(profileEmail)) {
+    return back(res, '/app/settings', 'err', 'That contact email does not look valid.');
+  }
   await db.q(`UPDATE company_settings SET hourly_rate_cents=$2, tax_percent=$3, parts_multiplier=$4,
-      reminder_in=$5, reminder_out=$6, pay_anchor=$7, pay_cycle_days=$8, quarter_start=$9, quarter_end=$10
+      reminder_in=$5, reminder_out=$6, pay_anchor=$7, pay_cycle_days=$8, quarter_start=$9, quarter_end=$10,
+      profile_display_name=$11, profile_address=$12, profile_phone=$13, profile_email=$14, logo_data_url=$15
     WHERE company_id=$1`,
     [req.companyId, dollarsToCents(b.hourly_rate), Number(b.tax_percent) || 0, Number(b.parts_multiplier) || 1,
      b.reminder_in || '08:30', b.reminder_out || '16:30', b.pay_anchor, parseInt(b.pay_cycle_days, 10) || 14,
-     b.quarter_start, b.quarter_end]);
+     b.quarter_start, b.quarter_end,
+     String(b.profile_display_name || '').trim() || null,
+     String(b.profile_address || '').trim() || null,
+     String(b.profile_phone || '').trim() || null,
+     profileEmail, logoDataUrl]);
   res.redirect('/app/settings?msg=' + encodeURIComponent('Settings saved.'));
 });
 

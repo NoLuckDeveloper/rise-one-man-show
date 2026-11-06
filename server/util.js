@@ -75,6 +75,56 @@ function computeInvoice({ hours, parts, hourlyRateCents, taxPercent, partsMultip
   };
 }
 
+// Proposal math. items: [{description, qty, unitCostCents}] — the same
+// shape as invoice parts minus the parts multiplier (proposals bill lines
+// at their stated unit cost). Tax % comes from Settings -> Invoicing, the
+// same rate invoices use.
+function computeProposal({ items, taxPercent }) {
+  const lines = (items || []).map((it) => {
+    const qty = Number(it.qty || 0);
+    const unitCostCents = Number(it.unitCostCents || 0);
+    return {
+      description: it.description || '',
+      qty,
+      unitCostCents,
+      lineCents: Math.round(qty * unitCostCents),
+    };
+  });
+  const subtotalCents = lines.reduce((s, l) => s + l.lineCents, 0);
+  const taxCents = Math.round(subtotalCents * (Number(taxPercent || 0) / 100));
+  return { lines, subtotalCents, taxCents, totalCents: subtotalCents + taxCents };
+}
+
+// Validate an image data URL (logo uploads, signature-pad captures) and
+// decode it. Returns { mime, ext, bytes } or null when the value is not a
+// supported image, fails its magic-byte check, or is outside the size
+// bounds. minBytes exists for the signature pad: a blank canvas encodes to
+// a few hundred bytes, so a real signature must clear a floor (default 0).
+const IMAGE_TYPES = {
+  'image/png': { ext: 'png', magic: [0x89, 0x50, 0x4e, 0x47] },
+  'image/jpeg': { ext: 'jpg', magic: [0xff, 0xd8, 0xff] },
+  'image/gif': { ext: 'gif', magic: [0x47, 0x49, 0x46] },
+  'image/webp': { ext: 'webp', magic: [0x52, 0x49, 0x46, 0x46], webp: true },
+};
+function parseImageDataUrl(value, { maxBytes = 5 * 1024 * 1024, minBytes = 0 } = {}) {
+  if (typeof value !== 'string') return null;
+  const m = value.match(/^data:(image\/(?:png|jpe?g|gif|webp));base64,([A-Za-z0-9+/=]+)$/);
+  if (!m) return null;
+  const mime = m[1] === 'image/jpg' ? 'image/jpeg' : m[1];
+  const type = IMAGE_TYPES[mime];
+  if (!type) return null;
+  let bytes;
+  try {
+    bytes = Buffer.from(m[2], 'base64');
+  } catch (e) {
+    return null;
+  }
+  if (!bytes.length || bytes.length > maxBytes || bytes.length < minBytes) return null;
+  if (!type.magic.every((b, i) => bytes[i] === b)) return null;
+  if (type.webp && !(bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50)) return null;
+  return { mime, ext: type.ext, bytes };
+}
+
 function hoursBetween(startIso, endIso) {
   if (!startIso || !endIso) return 0;
   const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
@@ -128,4 +178,4 @@ function buildReportCsv({ punches, trips, gas, maint, invoices, hourlyRateCents,
   return [rows[0], ...body].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
 }
 
-module.exports = { esc, money, dollarsToCents, haversineMiles, trackMiles, computeInvoice, hoursBetween, daysLeft, mapsUrl, isoDate, csvCell, buildReportCsv };
+module.exports = { esc, money, dollarsToCents, haversineMiles, trackMiles, computeInvoice, computeProposal, parseImageDataUrl, hoursBetween, daysLeft, mapsUrl, isoDate, csvCell, buildReportCsv };
