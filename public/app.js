@@ -178,7 +178,10 @@ function fileToDataUrl(file, maxDim) {
       canvas.height = Math.round(img.height * scale);
       canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
       URL.revokeObjectURL(url);
-      resolve(canvas.toDataURL('image/jpeg', 0.82));
+      // PNGs keep their alpha channel (company logos) — exporting as
+      // JPEG would flatten transparency to black. Anything else becomes
+      // JPEG, as before.
+      resolve(file.type === 'image/png' ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.82));
     };
     img.onerror = () => resolve('');
     img.src = url;
