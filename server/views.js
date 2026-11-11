@@ -980,7 +980,9 @@ function usersPage({ user, sub, company, flash, users, tier, seatUsed }) {
 
 // --- Price book ---------------------------------------------------------------------
 
-function priceBookPage({ user, sub, company, flash, items, query }) {
+function priceBookPage({ user, sub, company, flash, items, query, editId }) {
+  const qParam = query ? '&q=' + encodeURIComponent(query) : '';
+  const cancelHref = '/app/price-book' + (query ? '?q=' + encodeURIComponent(query) : '');
   const body = `
   <section class="card"><h2>Price Book — ${esc(company.name)}</h2>
     <p class="muted">Parts your company saves once and reuses on job reports. Pick one on a report and its description and cost fill in automatically — the invoice still applies your parts multiplier, exactly like a hand-typed part.</p>
@@ -1000,7 +1002,7 @@ function priceBookPage({ user, sub, company, flash, items, query }) {
       <button class="btn primary" type="submit">Add part</button>
     </form>
     <h3>Saved parts (${items.length})</h3>
-    ${items.length ? items.map((p) => `
+    ${items.length ? items.map((p) => (editId === p.id ? `
     <div class="part-edit">
       <form method="post" action="/app/price-book/${p.id}/edit">
         <label>Name <input name="name" value="${esc(p.name)}" required></label>
@@ -1011,10 +1013,18 @@ function priceBookPage({ user, sub, company, flash, items, query }) {
         <label>Description <input name="description" value="${esc(p.description || '')}" placeholder="Description"></label>
         <div class="row-actions">
           <button class="btn small" type="submit">Save</button>
+          <a class="btn small" href="${cancelHref}">Cancel</a>
           <button class="btn small danger" type="submit" formaction="/app/price-book/${p.id}/delete" formnovalidate onclick="return confirm('Remove this part from the price book?')">Delete</button>
         </div>
       </form>
-    </div>`).join('') : '<p class="muted">No parts saved yet — add your first one above.</p>'}
+    </div>` : `
+    <div class="line">
+      <div class="part-row">
+        <div><strong>${esc(p.name)}</strong>${p.part_number ? ` <span class="muted">· ${esc(p.part_number)}</span>` : ''}</div>
+        <div class="part-row-right"><strong>${money(p.cost_cents)}</strong> <a class="btn small" href="/app/price-book?edit=${p.id}${qParam}">Edit</a></div>
+      </div>
+      ${p.description ? `<div class="muted">${esc(p.description)}</div>` : ''}
+    </div>`)).join('') : '<p class="muted">No parts saved yet — add your first one above.</p>'}
   </section>`;
   return layout({ title: 'Price Book', user, sub, company, flash, body });
 }
