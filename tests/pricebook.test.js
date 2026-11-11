@@ -48,6 +48,7 @@ const fakeDb = {
 require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: fakeDb };
 
 const pricebook = require('../server/pricebook');
+const views = require('../server/views');
 
 function reset() {
   state.items = [];
@@ -86,6 +87,18 @@ function reset() {
   await assert.rejects(() => pricebook.addItem(1, { name: '   ', part_number: null, description: null, cost_cents: 100 }), /Part name is required/);
   await assert.rejects(() => pricebook.addItem(1, { name: 'X', part_number: null, description: null, cost_cents: -5 }), /Cost must be \$0 or more/);
   await assert.rejects(() => pricebook.addItem(1, { name: 'X', part_number: null, description: null, cost_cents: 10.5 }), /Cost must be \$0 or more/);
+
+  // 6. The page shows saved parts with labeled, full-width fields —
+  // the old one-line row squeezed name/description to a character wide.
+  {
+    const page = views.priceBookPage({ user: { role: 'owner' }, sub: { status: 'active' }, company: { name: 'Handyman Co' }, flash: null, items: [{ id: 1, name: 'Faucet supply line', part_number: '001', description: 'Braided stainless', cost_cents: 695 }], query: '' });
+    assert.ok(page.includes('Faucet supply line'), 'price book hides the part name');
+    assert.ok(page.includes('Braided stainless'), 'price book hides the description');
+    assert.ok(page.includes('<label>Name'), 'saved part name has no label');
+    assert.ok(page.includes('<label>Description'), 'saved part description has no label');
+    assert.ok(!page.includes('width:130px'), 'saved part row still uses the cramped fixed widths');
+    assert.ok(!page.includes('width:90px'), 'saved part row still uses the cramped fixed widths');
+  }
 
   console.log('pricebook.test.js PASS');
 })().catch((e) => {
