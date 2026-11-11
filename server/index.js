@@ -1398,7 +1398,8 @@ app.post('/app/users/:id/reset', auth.requireRole('owner', 'admin'), loadCompany
 // techs pick from it on the job report (the picker is read-only use).
 app.get('/app/price-book', auth.requireRole('owner', 'admin'), async (req, res) => {
   const items = await pricebook.listItems(req.companyId, req.query.q || '');
-  res.send(views.priceBookPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), items, query: req.query.q || '' }));
+  const editId = Number(req.query.edit) || null;
+  res.send(views.priceBookPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), items, query: req.query.q || '', editId }));
 });
 app.post('/app/price-book', auth.requireRole('owner', 'admin'), async (req, res) => {
   try {
