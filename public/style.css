@@ -62,6 +62,12 @@ label.check input { width: auto; margin: 0; }
 fieldset { border: 1px solid var(--line); border-radius: 10px; margin: 14px 0; }
 legend { color: var(--muted); font-size: 13px; padding: 0 6px; }
 .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.part-edit { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.part-edit:last-child { border-bottom: none; }
+@media (max-width: 560px) {
+  .grid3 { grid-template-columns: 1fr; }
+}
 
 .btn { display: inline-block; background: var(--navy2); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 9px 14px; font-size: 15px; cursor: pointer; text-decoration: none; text-align: center; }
 .btn.primary { background: var(--teal-dark); border-color: var(--teal-dark); color: #fff; font-weight: 600; }
