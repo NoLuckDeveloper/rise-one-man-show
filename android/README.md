@@ -98,3 +98,6 @@ background location use during trips, matching the in-app disclosure.
 7. Tap Stop on the notification mid-trip and confirm tracking ends.
 8. With the phone offline during a trip, confirm fixes are retried and land
    once connectivity returns (no crash, no lost miles beyond the trip window).
+9. Tap Choose File on Settings → Logo and confirm the system picker opens
+   and the logo saves; same for job-report photos. (WebView file inputs
+   need the app's onShowFileChooser — without it the button is dead.)
