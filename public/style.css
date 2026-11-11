@@ -134,7 +134,7 @@ table.kv td:first-child { color: var(--muted); }
 .inv-table { width: 100%; border-collapse: collapse; margin-top: 14px; }
 .inv-table th, .inv-table td { padding: 8px 6px; border-bottom: 1px solid #ddd; text-align: left; }
 .inv-table .r { text-align: right; }
-.inv-table .total td { font-size: 19px; font-weight: 800; background: #ccfbf1; border-bottom: none; }
+.inv-table .total td { font-size: 19px; font-weight: 800; background: #ccfbf1; border-bottom: none; color: #000; }
 .live-timer { font-variant-numeric: tabular-nums; font-size: 18px; }
 
 @media print {
