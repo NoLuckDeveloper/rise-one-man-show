@@ -251,4 +251,38 @@ const viewLaborTotals = computeProposal({
   assert.strictEqual(mailer.logoAttachment({ logoUrl: '' }), null, 'logoAttachment should be null without a logo');
 }
 
+// --- Proposals list page + nav menu ---------------------------------------------
+{
+  const sent = {
+    proposal: { id: 1, status: 'sent', display_mode: 'itemized', sent_at: '2026-11-11T11:42:00Z', customer_note: '', customer_decision_note: '' },
+    call: { id: 1, customer_name: 'Test', description: 'Estimate to replace garage door' },
+    totals: computeProposal({ items: [{ description: '16x7 Garage Door', qty: 1, unitCostCents: 120000 }], taxPercent: 8.25, laborHours: 3, hourlyRateCents: 9500, partsMultiplier: 1.8 }),
+  };
+  const changes = {
+    proposal: { id: 2, status: 'changes_requested', display_mode: 'itemized', sent_at: '2026-11-11T11:42:00Z', customer_note: '', customer_decision_note: 'Change wording' },
+    call: { id: 1, customer_name: 'Test', description: 'Estimate to replace garage door' },
+    totals: computeProposal({ items: [], taxPercent: 8.25, laborHours: 1, hourlyRateCents: 9500 }),
+  };
+  const page = views.proposalsPage({ user: viewUser, sub: viewSub, company, flash: null, proposals: [sent, changes] });
+  assert.ok(page.includes('Proposals sent'), 'proposals page missing heading');
+  assert.ok(page.includes('$2,646.71'), 'proposals page missing multiplier total');
+  assert.ok(page.includes('Sent'), 'proposals page missing sent status');
+  assert.ok(page.includes('Changes requested'), 'proposals page missing changes-requested status');
+  assert.ok(page.includes('Change wording'), 'proposals page missing change request note');
+  assert.ok(page.includes('/app/calls/1/proposals/1'), 'proposals page missing view link');
+  const empty = views.proposalsPage({ user: viewUser, sub: viewSub, company, flash: null, proposals: [] });
+  assert.ok(empty.includes('No proposals sent yet.'), 'proposals page missing empty state');
+}
+{
+  // The tab bar is now a dropdown menu, with Proposals in it for
+  // owners/admins and hidden from techs.
+  const page = views.proposalsPage({ user: viewUser, sub: viewSub, company, flash: null, proposals: [] });
+  assert.ok(page.includes('<details class="nav-menu">'), 'nav menu missing');
+  assert.ok(page.includes('<summary>☰ Proposals</summary>'), 'nav menu missing current-page label');
+  assert.ok(page.includes('href="/app/proposals"'), 'nav menu missing Proposals link');
+  assert.ok(!page.includes('class="tabs"'), 'old tab bar still rendered');
+  const techPage = views.proposalsPage({ user: { role: 'tech' }, sub: viewSub, company, flash: null, proposals: [] });
+  assert.ok(!techPage.includes('href="/app/proposals"'), 'techs see the Proposals link');
+}
+
 console.log('proposals.test.js PASS');
