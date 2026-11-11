@@ -88,16 +88,22 @@ function reset() {
   await assert.rejects(() => pricebook.addItem(1, { name: 'X', part_number: null, description: null, cost_cents: -5 }), /Cost must be \$0 or more/);
   await assert.rejects(() => pricebook.addItem(1, { name: 'X', part_number: null, description: null, cost_cents: 10.5 }), /Cost must be \$0 or more/);
 
-  // 6. The page shows saved parts with labeled, full-width fields —
-  // the old one-line row squeezed name/description to a character wide.
+  // 6. Saved parts read like a list: read-only rows with an Edit link,
+  // and only the part being edited shows the form.
   {
-    const page = views.priceBookPage({ user: { role: 'owner' }, sub: { status: 'active' }, company: { name: 'Handyman Co' }, flash: null, items: [{ id: 1, name: 'Faucet supply line', part_number: '001', description: 'Braided stainless', cost_cents: 695 }], query: '' });
+    const item = { id: 1, name: 'Faucet supply line', part_number: '001', description: 'Braided stainless', cost_cents: 695 };
+    const page = views.priceBookPage({ user: { role: 'owner' }, sub: { status: 'active' }, company: { name: 'Handyman Co' }, flash: null, items: [item], query: '' });
     assert.ok(page.includes('Faucet supply line'), 'price book hides the part name');
     assert.ok(page.includes('Braided stainless'), 'price book hides the description');
-    assert.ok(page.includes('<label>Name'), 'saved part name has no label');
-    assert.ok(page.includes('<label>Description'), 'saved part description has no label');
+    assert.ok(page.includes('$6.95'), 'price book hides the cost');
+    assert.ok(page.includes('/app/price-book?edit=1'), 'saved part has no Edit link');
+    assert.ok(!page.includes('value="Faucet supply line"'), 'saved part is editable without hitting Edit');
     assert.ok(!page.includes('width:130px'), 'saved part row still uses the cramped fixed widths');
-    assert.ok(!page.includes('width:90px'), 'saved part row still uses the cramped fixed widths');
+    const editing = views.priceBookPage({ user: { role: 'owner' }, sub: { status: 'active' }, company: { name: 'Handyman Co' }, flash: null, items: [item], query: '', editId: 1 });
+    assert.ok(editing.includes('value="Faucet supply line"'), 'edit mode hides the name field');
+    assert.ok(editing.includes('<label>Name'), 'edit mode has no Name label');
+    assert.ok(editing.includes('<label>Description'), 'edit mode has no Description label');
+    assert.ok(editing.includes('Cancel'), 'edit mode has no Cancel link');
   }
 
   console.log('pricebook.test.js PASS');
