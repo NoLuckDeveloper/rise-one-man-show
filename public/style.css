@@ -24,11 +24,14 @@ main { max-width: 860px; margin: 0 auto; padding: 16px 14px 110px; }
 .wordmark .brand-rise { color: var(--teal); font-size: 18px; font-weight: 800; display: inline; letter-spacing: 1px; }
 .company-name { margin-left: auto; color: var(--muted); font-size: 14px; }
 
-.tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 12px; background: var(--navy2); border-bottom: 1px solid var(--line); align-items: center; }
-.tabs a { color: var(--text); text-decoration: none; padding: 7px 10px; border-radius: 8px; font-size: 14px; }
-.tabs a:hover { background: var(--card); }
-.tabs .logout { margin-left: auto; }
-.tabs .logout button { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.nav-menu { background: var(--navy2); border-bottom: 1px solid var(--line); }
+.nav-menu summary { cursor: pointer; padding: 10px 12px; font-size: 15px; font-weight: 700; list-style: none; }
+.nav-menu summary::-webkit-details-marker { display: none; }
+.menu-links { display: flex; flex-direction: column; padding: 4px 12px 10px; }
+.menu-links a { color: var(--text); text-decoration: none; padding: 9px 10px; border-radius: 8px; font-size: 15px; }
+.menu-links a:hover { background: var(--card); }
+.menu-links .logout { margin-top: 6px; }
+.menu-links .logout button { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 8px; padding: 8px 10px; cursor: pointer; width: 100%; text-align: left; }
 
 .banner { padding: 10px 16px; font-size: 14px; }
 .banner.trial { background: #2a1650; }
@@ -127,7 +130,7 @@ table.kv td:first-child { color: var(--muted); }
 .live-timer { font-variant-numeric: tabular-nums; font-size: 18px; }
 
 @media print {
-  .tabs, .brand, .banner, .fab, .no-print, form, .row-actions { display: none !important; }
+  .nav-menu, .brand, .banner, .fab, .no-print, form, .row-actions { display: none !important; }
   body { background: #fff; color: #111; }
   main { max-width: none; }
   .card { background: #fff; color: #111; border: none; }
