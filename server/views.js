@@ -71,6 +71,9 @@ function subBanner(user, sub) {
   if (sub.status === 'past_due') {
     return `<div class="banner warn">Payment problem — your subscription is past due. ${user.role === 'owner' ? '<a href="/app/billing">Update your payment method</a>.' : 'Ask your company owner to update billing.'}${testTag}</div>`;
   }
+  if (sub.status === 'free') {
+    return `<div class="banner subtle">Free access — unlimited users, no charges, courtesy of the platform admin.${testTag}</div>`;
+  }
   if (sub.status === 'trial_ended' || sub.status === 'canceled') {
     return `<div class="banner warn">Subscription ${sub.status === 'canceled' ? 'canceled' : 'trial ended'} — the app is locked to billing.${testTag}</div>`;
   }
@@ -904,9 +907,12 @@ function settingsPage({ user, sub, company, flash, s }) {
 function usersPage({ user, sub, company, flash, users, tier, seatUsed }) {
   const t = tier || billing.tiers.tierById(company.plan_tier);
   const used = seatUsed !== undefined ? seatUsed : users.filter((u) => u.active).length;
+  const seatsLine = sub && sub.status === 'free'
+    ? `<p>Seats: <strong>${used} used</strong> — unlimited seats (free access).</p>`
+    : `<p>Seats: <strong>${used} of ${t.seats} used</strong> on the ${esc(t.label)} plan (${money(t.monthlyCents)}/month).${used >= t.seats ? ' <strong>Seat limit reached</strong> — an owner can upgrade the plan on the <a href="/app/billing">Billing page</a> to add more users.' : ''}</p>`;
   const body = `
   <section class="card"><h2>Users — ${esc(company.name)}</h2>
-    <p>Seats: <strong>${used} of ${t.seats} used</strong> on the ${esc(t.label)} plan (${money(t.monthlyCents)}/month).${used >= t.seats ? ' <strong>Seat limit reached</strong> — an owner can upgrade the plan on the <a href="/app/billing">Billing page</a> to add more users.' : ''}</p>
+    ${seatsLine}
     ${users.map((u) => `<div class="line"><strong>${esc(u.name)}</strong> · ${esc(u.email)} · <span class="tag">${esc(u.role)}</span> ${u.active ? '' : '<span class="tag warn">deactivated</span>'}
       ${u.id !== user.id ? `<form method="post" action="/app/users/${u.id}/toggle" class="inline"><button class="link">${u.active ? 'Deactivate' : 'Reactivate'}</button></form>
       <form method="post" action="/app/users/${u.id}/reset" class="inline"><input name="password" placeholder="New password" minlength="8" required> <button class="link">Reset password</button></form>` : ''}</div>`).join('')}
@@ -932,8 +938,9 @@ function usersPage({ user, sub, company, flash, users, tier, seatUsed }) {
 function billingPage({ user, sub, company, flash, events, checkoutState, tier, seatUsed }) {
   const t = tier || billing.tiers.tierById(company.plan_tier);
   const hasCard = !!sub.payment_last4;
+  const isFree = sub.status === 'free';
   const otherTiers = billing.tiers.TIERS.filter((x) => x.id !== t.id);
-  const planSwitch = `
+  const planSwitch = isFree ? '' : `
     <h3>Switch plan</h3>
     <p class="muted">Upgrades and downgrades take effect immediately and are prorated by Stripe. You cannot switch to a plan with fewer seats than your current active user count — remove users first.</p>
     ${otherTiers.map((x) => `<form method="post" action="/app/billing/plan-change" class="row-actions">
@@ -942,7 +949,11 @@ function billingPage({ user, sub, company, flash, events, checkoutState, tier, s
       <button class="btn small" type="submit">Switch to ${esc(x.label)}</button>
     </form>`).join('')}`;
   let actions = '';
-  if (!billing.TEST_MODE) {
+  if (isFree) {
+    actions = `
+      <div class="card inner"><h3>Free access</h3>
+      <p>Your company has <strong>free unlimited access</strong>, granted by the platform admin — no charges, unlimited users, never expires. If this ever changes, the billing options will reappear here.</p></div>`;
+  } else if (!billing.TEST_MODE) {
     actions = `
       <form method="post" action="/app/billing/checkout"><button class="btn primary wide" type="submit">
         ${sub.status === 'active' ? 'Update subscription / payment method' : 'Add payment method & start subscription'}</button></form>
@@ -967,9 +978,9 @@ function billingPage({ user, sub, company, flash, events, checkoutState, tier, s
     ${checkoutState === 'success' ? '<div class="flash ok">Checkout complete — thank you!</div>' : ''}
     ${checkoutState === 'cancel' ? '<div class="flash">Checkout canceled — no changes made.</div>' : ''}
     <table class="kv">
-      <tr><td>Plan</td><td><strong>${esc(t.label)}</strong> — ${money(t.monthlyCents)}/month (${t.seats === 1 ? '1 user' : `up to ${t.seats} users`}) · Seats used: <strong>${seatUsed !== undefined ? seatUsed : '—'} of ${t.seats}</strong></td></tr>
-      <tr><td>Status</td><td><strong>${esc(sub.status)}</strong></td></tr>
-      <tr><td>Trial</td><td>${isoDate(sub.trial_start)} → ${isoDate(sub.trial_end)}${sub.status === 'trialing' ? ` (${daysLeft(sub.trial_end)} days left)` : ''}</td></tr>
+      <tr><td>Plan</td><td>${isFree ? '<strong>Free access</strong> — unlimited users, never expires, no charge' : `<strong>${esc(t.label)}</strong> — ${money(t.monthlyCents)}/month (${t.seats === 1 ? '1 user' : `up to ${t.seats} users`}) · Seats used: <strong>${seatUsed !== undefined ? seatUsed : '—'} of ${t.seats}</strong>`}</td></tr>
+      <tr><td>Status</td><td><strong>${isFree ? 'Free access' : esc(sub.status)}</strong></td></tr>
+      <tr><td>Trial</td><td>${isFree ? 'Not applicable — free access never expires.' : `${isoDate(sub.trial_start)} → ${isoDate(sub.trial_end)}${sub.status === 'trialing' ? ` (${daysLeft(sub.trial_end)} days left)` : ''}`}</td></tr>
       ${sub.current_period_end ? `<tr><td>Current period ends</td><td>${isoDate(sub.current_period_end)}</td></tr>` : ''}
       <tr><td>Payment method</td><td>${hasCard ? `${esc(sub.payment_brand || 'Card')} •••• ${esc(sub.payment_last4)}` : 'None on file'}</td></tr>
     </table>
@@ -988,17 +999,20 @@ function platformPage({ user, flash, companies, totals, demoId }) {
   <h2>Platform admin</h2>
   <section class="card">
     <p>Companies: <strong>${totals.companies}</strong> · Trialing: <strong>${totals.trialing}</strong> ·
-       Active: <strong>${totals.active}</strong> · Estimated MRR: <strong>${money(totals.mrrCents || 0)}</strong></p>
+       Active: <strong>${totals.active}</strong> · Free: <strong>${totals.free || 0}</strong> · Estimated MRR: <strong>${money(totals.mrrCents || 0)}</strong></p>
     ${totals.breakdown ? `<p class="muted">By plan (trialing + active): ${totals.breakdown.map((b) => `${esc(b.tier.label)}: <strong>${b.count}</strong>`).join(' · ')}</p>` : ''}
   </section>
   ${companies.map((c) => `
   <section class="card">
     <div class="call-head"><strong>${esc(c.name)}</strong> ${c.id === demoId ? '<span class="tag">DEMO</span>' : ''}
       <span class="tag">${esc(c.sub_status || 'no subscription')}</span></div>
-    <div class="muted">Signed up ${new Date(c.created_at).toLocaleDateString()} · ${c.user_count} user(s)${c.trial_end ? ' · Trial ends ' + isoDate(c.trial_end) : ''}</div>
+    <div class="muted">Signed up ${new Date(c.created_at).toLocaleDateString()} · ${c.user_count} user(s)${c.sub_status === 'free' ? ' · Free access (unlimited)' : (c.trial_end ? ' · Trial ends ' + isoDate(c.trial_end) : '')}</div>
     <div class="row-actions">
-      <form method="post" action="/platform/companies/${c.id}/extend-trial" class="inline"><button class="btn small">Extend trial +7 days</button></form>
+      ${c.sub_status === 'free'
+        ? `<form method="post" action="/platform/companies/${c.id}/remove-free" class="inline" onsubmit="return confirm('Remove free access? This company goes back to its previous billing status.')"><button class="btn small">Remove free access</button></form>`
+        : `<form method="post" action="/platform/companies/${c.id}/extend-trial" class="inline"><button class="btn small">Extend trial +7 days</button></form>
       <form method="post" action="/platform/companies/${c.id}/cancel" class="inline" onsubmit="return confirm('Cancel this subscription?')"><button class="btn small danger">Cancel subscription</button></form>
+      <form method="post" action="/platform/companies/${c.id}/make-free" class="inline" onsubmit="return confirm('Give this company free unlimited access? No charges, unlimited users, never expires.')"><button class="btn small">Make free (unlimited)</button></form>`}
       ${c.id === demoId ? `<form method="post" action="/platform/companies/${c.id}/delete" class="inline" onsubmit="return confirm('Remove the demo company and all its data?')"><button class="btn small danger">Remove demo</button></form>` : ''}
     </div>
   </section>`).join('')}`;

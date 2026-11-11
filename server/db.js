@@ -61,7 +61,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS subscriptions (
   id                    SERIAL PRIMARY KEY,
   company_id            INTEGER NOT NULL UNIQUE REFERENCES companies(id) ON DELETE CASCADE,
-  status                TEXT NOT NULL DEFAULT 'trialing', -- trialing|active|past_due|canceled|trial_ended
+  status                TEXT NOT NULL DEFAULT 'trialing', -- trialing|active|past_due|canceled|trial_ended|free
   trial_start           TIMESTAMPTZ NOT NULL DEFAULT now(),
   trial_end             TIMESTAMPTZ NOT NULL,
   current_period_end    TIMESTAMPTZ,
@@ -314,6 +314,11 @@ CREATE INDEX IF NOT EXISTS idx_calls_assigned ON calls(assigned_user_id);
 -- UPDATE is belt-and-braces for any row holding an unknown value.
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS plan_tier TEXT NOT NULL DEFAULT 'solo';
 UPDATE companies SET plan_tier = 'solo' WHERE plan_tier NOT IN ('solo', 'team3', 'team6', 'team10');
+
+-- Complimentary (free) access, granted by the platform admin: the
+-- subscription status becomes 'free' and the previous billing status is
+-- kept in free_prev_status, so removing free access restores it exactly.
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS free_prev_status TEXT;
 `;
 
 async function migrate() {

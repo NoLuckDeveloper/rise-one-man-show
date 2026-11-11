@@ -1299,16 +1299,17 @@ app.post('/app/settings/connect/simulate', auth.requireRole('owner'), async (req
 
 // --- Users --------------------------------------------------------------------------
 // Seat usage for the current company: tier from the company row, used =
-// active users (a deactivated user frees their seat).
-async function seatUsage(company) {
+// active users (a deactivated user frees their seat). A company with free
+// (complimentary) access has unlimited seats.
+async function seatUsage(company, sub) {
   const tier = billing.tiers.tierById(company.plan_tier);
   const used = await billing.countActiveUsers(company.id);
-  return { tier, used };
+  return { tier, used, unlimited: !!sub && sub.status === 'free' };
 }
 
 app.get('/app/users', auth.requireRole('owner', 'admin'), async (req, res) => {
   const users = await db.many('SELECT * FROM users WHERE company_id=$1 ORDER BY id', [req.companyId]);
-  const seats = await seatUsage(req.company);
+  const seats = await seatUsage(req.company, req.sub);
   res.send(views.usersPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), users, tier: seats.tier, seatUsed: seats.used }));
 });
 app.post('/app/users', auth.requireRole('owner', 'admin'), async (req, res) => {
@@ -1316,8 +1317,8 @@ app.post('/app/users', auth.requireRole('owner', 'admin'), async (req, res) => {
   const email = String(b.email || '').trim().toLowerCase();
   const role = ['owner', 'admin', 'tech'].includes(b.role) ? b.role : 'tech';
   if (role === 'owner' && req.user.role !== 'owner') return back(res, '/app/users', 'err', 'Only an owner can add another owner.');
-  const seats = await seatUsage(req.company);
-  if (seats.used >= seats.tier.seats) {
+  const seats = await seatUsage(req.company, req.sub);
+  if (!seats.unlimited && seats.used >= seats.tier.seats) {
     return back(res, '/app/users', 'err', `Seat limit reached: your company is on the ${seats.tier.label} plan (${seats.used} of ${seats.tier.seats} seats used). Upgrade your plan on the Billing page to add more users.`);
   }
   const existing = await db.one('SELECT id FROM users WHERE email=$1', [email]);
@@ -1349,7 +1350,7 @@ app.post('/app/users/:id/reset', auth.requireRole('owner', 'admin'), loadCompany
 // --- Billing (owner only) --------------------------------------------------------------
 app.get('/app/billing', auth.requireRole('owner'), async (req, res) => {
   const events = await db.many('SELECT * FROM billing_events WHERE company_id=$1 ORDER BY id DESC LIMIT 50', [req.companyId]);
-  const seats = await seatUsage(req.company);
+  const seats = await seatUsage(req.company, req.sub);
   res.send(views.billingPage({
     user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), events,
     checkoutState: req.query.checkout || null,
@@ -1422,6 +1423,7 @@ app.get('/platform', requirePlatform, async (req, res) => {
     companies: companies.length,
     trialing: companies.filter((c) => c.sub_status === 'trialing').length,
     active: companies.filter((c) => c.sub_status === 'active').length,
+    free: companies.filter((c) => c.sub_status === 'free').length,
     mrrCents: billing.tiers.computeMrr(companies),
     breakdown: billing.tiers.tierBreakdown(companies),
   };
@@ -1443,6 +1445,26 @@ app.post('/platform/companies/:id/cancel', requirePlatform, async (req, res) => 
   await billing.setStatus(Number(req.params.id), 'canceled');
   await db.billingEvent(Number(req.params.id), 'canceled', 'Subscription canceled by platform admin.');
   res.redirect('/platform?msg=' + encodeURIComponent('Subscription canceled.'));
+});
+app.post('/platform/companies/:id/make-free', requirePlatform, async (req, res) => {
+  try {
+    const company = await db.one('SELECT name FROM companies WHERE id=$1', [req.params.id]);
+    await billing.grantFreeAccess(Number(req.params.id));
+    res.redirect('/platform?msg=' + encodeURIComponent(`${company ? company.name : 'Company'} now has free unlimited access.`));
+  } catch (e) {
+    console.error('[platform] make-free failed', e.message);
+    res.redirect('/platform?err=' + encodeURIComponent(e.message));
+  }
+});
+app.post('/platform/companies/:id/remove-free', requirePlatform, async (req, res) => {
+  try {
+    const company = await db.one('SELECT name FROM companies WHERE id=$1', [req.params.id]);
+    await billing.removeFreeAccess(Number(req.params.id));
+    res.redirect('/platform?msg=' + encodeURIComponent(`Free access removed for ${company ? company.name : 'company'}.`));
+  } catch (e) {
+    console.error('[platform] remove-free failed', e.message);
+    res.redirect('/platform?err=' + encodeURIComponent(e.message));
+  }
 });
 app.post('/platform/companies/:id/delete', requirePlatform, async (req, res) => {
   await db.q('DELETE FROM companies WHERE id=$1', [req.params.id]);

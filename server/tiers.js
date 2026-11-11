@@ -46,8 +46,9 @@ function perUserCents(tier) {
 }
 
 // MRR in cents across companies whose subscription is trialing or active.
-// Companies with any other status (past_due, canceled, trial_ended) do not
-// count — MRR is money actually expected, not seats ever sold.
+// Companies with any other status (past_due, canceled, trial_ended, free)
+// do not count — MRR is money actually expected, not seats ever sold.
+// Free (complimentary) companies pay $0, so they never add to MRR.
 function computeMrr(companies) {
   return (companies || [])
     .filter((c) => c.sub_status === 'trialing' || c.sub_status === 'active')

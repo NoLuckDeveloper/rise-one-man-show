@@ -40,6 +40,8 @@ async function setStatus(companyId, status, extra = {}) {
 async function refreshState(companyId) {
   const sub = await getSubscription(companyId);
   if (!sub) return null;
+  // Complimentary access never expires and never syncs from Stripe.
+  if (sub.status === 'free') return sub;
   const now = new Date();
 
   if (sub.status === 'trialing' && new Date(sub.trial_end) <= now) {
@@ -141,6 +143,7 @@ async function changePlan(companyId, tierId) {
   const sub = await getSubscription(companyId);
   if (!sub) throw new Error('No subscription found for this company.');
   if (sub.status === 'canceled') throw new Error('This subscription is canceled — reactivate it before switching plans.');
+  if (sub.status === 'free') throw new Error('This company has free access — plan switching is disabled while it is complimentary.');
   const headcount = await countActiveUsers(companyId);
   if (tier.seats < headcount) {
     throw new Error(`Cannot switch to ${tier.label}: your company has ${headcount} active user${headcount === 1 ? '' : 's'}, more than the ${tier.seats} seat${tier.seats === 1 ? '' : 's'} on that plan. Remove users first, then switch.`);
@@ -160,6 +163,44 @@ async function changePlan(companyId, tierId) {
   await q('UPDATE companies SET plan_tier = $2 WHERE id = $1', [companyId, tier.id]);
   await billingEvent(companyId, 'plan_changed', `Plan switched to ${tier.label} (${tier.seats} seat${tier.seats === 1 ? '' : 's'}).`);
   return tier;
+}
+
+// Complimentary access, granted by the platform admin: free forever,
+// unlimited seats, never billed. The previous billing status is kept so
+// removing free access restores it exactly. When a live Stripe
+// subscription exists it is canceled first, so the company is never
+// charged while complimentary.
+async function grantFreeAccess(companyId) {
+  const sub = await getSubscription(companyId);
+  if (!sub) throw new Error('No subscription found for this company.');
+  if (sub.status === 'free') return sub;
+  if (!TEST_MODE && sub.stripe_subscription_id && stripe) {
+    try {
+      const remote = await stripe.subscriptions.retrieve(sub.stripe_subscription_id);
+      if (remote && !['canceled', 'incomplete_expired'].includes(remote.status)) {
+        await stripe.subscriptions.cancel(sub.stripe_subscription_id);
+      }
+    } catch (e) {
+      throw new Error(`Could not cancel the Stripe subscription (${e.message}) — free access was not granted.`);
+    }
+  }
+  await setStatus(companyId, 'free', { free_prev_status: sub.status });
+  await billingEvent(companyId, 'free_access_granted', 'Platform admin granted free unlimited access.');
+  return getSubscription(companyId);
+}
+
+// Removing free access restores the previous billing status exactly
+// (usually 'canceled' for a company whose Stripe subscription was already
+// canceled). It does not restart Stripe billing — a company that needs to
+// pay again adds a payment method on the Billing page.
+async function removeFreeAccess(companyId) {
+  const sub = await getSubscription(companyId);
+  if (!sub) throw new Error('No subscription found for this company.');
+  if (sub.status !== 'free') return sub;
+  const prev = sub.free_prev_status || 'canceled';
+  await setStatus(companyId, prev, { free_prev_status: null });
+  await billingEvent(companyId, 'free_access_removed', `Platform admin removed free access — subscription back to ${prev}.`);
+  return getSubscription(companyId);
 }
 
 async function createPortalSession(company) {
@@ -182,6 +223,9 @@ async function applyStripeEvent(event) {
   if (!customerId) return false;
   const sub = await one('SELECT * FROM subscriptions WHERE stripe_customer_id = $1', [customerId]);
   if (!sub) return false;
+  // A complimentary grant is platform-admin state, not Stripe state —
+  // Stripe events must never clobber it.
+  if (sub.status === 'free') return true;
 
   if (event.type.startsWith('customer.subscription')) {
     const mapped = mapStripeStatus(obj.status);
@@ -224,4 +268,4 @@ async function applyStripeEvent(event) {
   return false;
 }
 
-module.exports = { TEST_MODE, stripe, getSubscription, setStatus, refreshState, createCheckoutSession, createPortalSession, applyStripeEvent, mapStripeStatus, changePlan, countActiveUsers, tiers };
+module.exports = { TEST_MODE, stripe, getSubscription, setStatus, refreshState, createCheckoutSession, createPortalSession, applyStripeEvent, mapStripeStatus, changePlan, countActiveUsers, grantFreeAccess, removeFreeAccess, tiers };
