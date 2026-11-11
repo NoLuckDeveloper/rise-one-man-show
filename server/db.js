@@ -95,6 +95,23 @@ CREATE TABLE IF NOT EXISTS company_settings (
   quarter_end       DATE NOT NULL DEFAULT DATE '2026-12-31'
 );
 
+-- Per-company price book: parts the company creates and saves itself
+-- (name, optional part number, optional description, cost). Job reports
+-- pick from it instead of retyping parts; the invoice multiplies the
+-- stored cost by the company's parts multiplier, exactly like a
+-- hand-typed part. Every query scopes by company_id.
+CREATE TABLE IF NOT EXISTS price_book_items (
+  id          SERIAL PRIMARY KEY,
+  company_id  INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  part_number TEXT,
+  description TEXT,
+  cost_cents  INTEGER NOT NULL DEFAULT 0,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_price_book_company ON price_book_items(company_id);
+
 CREATE TABLE IF NOT EXISTS calls (
   id             SERIAL PRIMARY KEY,
   company_id     INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,

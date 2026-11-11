@@ -5,6 +5,7 @@ const express = require('express');
 const db = require('./db');
 const auth = require('./auth');
 const billing = require('./billing');
+const pricebook = require('./pricebook');
 const payments = require('./payments');
 const mailer = require('./mailer');
 const views = require('./views');
@@ -619,9 +620,10 @@ app.get('/app/calls/:id/report', loadCall, async (req, res) => {
   const { calls } = await chainCalls(req.call);
   const totals = await chainTotals(req.companyId, calls.map((c) => c.id));
   const report = await db.one('SELECT * FROM job_reports WHERE call_id = $1', [req.call.id]);
+  const priceBook = await pricebook.listItems(req.companyId);
   res.send(views.reportPage({
     user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), call: req.call, report,
-    chainHours: totals.hours, chainMiles: totals.miles, print: req.query.print === '1',
+    chainHours: totals.hours, chainMiles: totals.miles, print: req.query.print === '1', priceBook,
   }));
 });
 
@@ -1345,6 +1347,44 @@ app.post('/app/users/:id/reset', auth.requireRole('owner', 'admin'), loadCompany
   const hash = await auth.hashPassword(pw);
   await db.q('UPDATE users SET password_hash=$1 WHERE id=$2', [hash, req.targetUser.id]);
   res.redirect('/app/users?msg=' + encodeURIComponent('Password reset.'));
+});
+
+// --- Price book ----------------------------------------------------------------------
+// The parts catalog each company builds for itself. Owner/admin manage it;
+// techs pick from it on the job report (the picker is read-only use).
+app.get('/app/price-book', auth.requireRole('owner', 'admin'), async (req, res) => {
+  const items = await pricebook.listItems(req.companyId, req.query.q || '');
+  res.send(views.priceBookPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), items, query: req.query.q || '' }));
+});
+app.post('/app/price-book', auth.requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    await pricebook.addItem(req.companyId, {
+      name: req.body.name, part_number: req.body.part_number,
+      description: req.body.description, cost_cents: dollarsToCents(req.body.cost),
+    });
+    res.redirect('/app/price-book?msg=' + encodeURIComponent('Part added to the price book.'));
+  } catch (e) {
+    back(res, '/app/price-book', 'err', e.message);
+  }
+});
+app.post('/app/price-book/:id/edit', auth.requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    await pricebook.updateItem(req.companyId, Number(req.params.id), {
+      name: req.body.name, part_number: req.body.part_number,
+      description: req.body.description, cost_cents: dollarsToCents(req.body.cost),
+    });
+    res.redirect('/app/price-book?msg=' + encodeURIComponent('Part updated.'));
+  } catch (e) {
+    back(res, '/app/price-book', 'err', e.message);
+  }
+});
+app.post('/app/price-book/:id/delete', auth.requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    await pricebook.deleteItem(req.companyId, Number(req.params.id));
+    res.redirect('/app/price-book?msg=' + encodeURIComponent('Part removed from the price book.'));
+  } catch (e) {
+    back(res, '/app/price-book', 'err', e.message);
+  }
 });
 
 // --- Billing (owner only) --------------------------------------------------------------

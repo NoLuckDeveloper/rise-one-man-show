@@ -88,6 +88,7 @@ function layout({ title, user, sub, company, flash, body, print }) {
           : `<a href="/app">Schedule</a>
              <a href="/app/completed">Completed</a>
              <a href="/app/customers">Customers</a>
+             ${user.role !== 'tech' ? '<a href="/app/price-book">Price Book</a>' : ''}
              <a href="/app/log">Log &amp; Report</a>
              ${user.role !== 'tech' ? '<a href="/app/users">Users</a>' : ''}
              ${user.role !== 'tech' ? '<a href="/app/settings">Settings</a>' : ''}
@@ -551,10 +552,20 @@ function proposalPage({ company, call, proposal, totals, profile, flash }) {
 
 // --- Job report --------------------------------------------------------------
 
-function reportPage({ user, sub, company, flash, call, report, chainHours, chainMiles, print }) {
+function reportPage({ user, sub, company, flash, call, report, chainHours, chainMiles, print, priceBook }) {
   const r = report || {};
   const parts = Array.isArray(r.parts) ? r.parts : [];
   const photos = Array.isArray(r.photos) ? r.photos : [];
+  const book = Array.isArray(priceBook) ? priceBook : [];
+  const bookDesc = (p) => [p.name, p.part_number, p.description].filter((x) => x).join(' — ');
+  const bookPicker = !print && book.length ? `
+        <div class="row-actions">
+          <select id="price-book-pick" style="flex:1">
+            <option value="">Add from price book…</option>
+            ${book.map((p) => `<option value="${p.id}" data-desc="${esc(bookDesc(p))}" data-cost="${(Number(p.cost_cents) / 100).toFixed(2)}">${esc(p.name)}${p.part_number ? ' — ' + esc(p.part_number) : ''} — ${money(p.cost_cents)}</option>`).join('')}
+          </select>
+          <button type="button" class="btn small" id="add-price-book-part">Add part</button>
+        </div>` : '';
   const partRows = (parts.length ? parts : [{ qty: '', description: '', costCents: '' }]).map((p) => `
     <div class="part-row">
       <input name="part_qty" type="number" step="any" min="0" placeholder="Qty" value="${p.qty !== undefined && p.qty !== '' ? esc(p.qty) : ''}">
@@ -574,6 +585,7 @@ function reportPage({ user, sub, company, flash, call, report, chainHours, chain
       <label>Location on site <input name="location_on_site" value="${esc(r.location_on_site || '')}"></label>
       <label>Work performed <textarea name="work_performed" rows="4">${esc(r.work_performed || '')}</textarea></label>
       <fieldset><legend>Parts used — Quantity · Description · Cost</legend>
+        ${bookPicker}
         <div id="parts">${partRows}</div>
         <button type="button" class="btn small" id="add-part">+ Add another part</button>
       </fieldset>
@@ -933,6 +945,43 @@ function usersPage({ user, sub, company, flash, users, tier, seatUsed }) {
   return layout({ title: 'Users', user, sub, company, flash, body });
 }
 
+// --- Price book ---------------------------------------------------------------------
+
+function priceBookPage({ user, sub, company, flash, items, query }) {
+  const body = `
+  <section class="card"><h2>Price Book — ${esc(company.name)}</h2>
+    <p class="muted">Parts your company saves once and reuses on job reports. Pick one on a report and its description and cost fill in automatically — the invoice still applies your parts multiplier, exactly like a hand-typed part.</p>
+    <form method="get" action="/app/price-book" class="row-actions">
+      <input name="q" placeholder="Search name, part number, description" value="${esc(query || '')}" style="flex:1">
+      <button class="btn small" type="submit">Search</button>
+      ${query ? '<a class="btn small" href="/app/price-book">Clear</a>' : ''}
+    </form>
+    <h3>Add a part</h3>
+    <form method="post" action="/app/price-book">
+      <div class="grid3">
+        <label>Name <input name="name" required></label>
+        <label>Part number <input name="part_number" placeholder="Optional"></label>
+        <label>Cost $ <input name="cost" inputmode="decimal" placeholder="0.00" required></label>
+      </div>
+      <label>Description <input name="description" placeholder="Optional — shows on the invoice line"></label>
+      <button class="btn primary" type="submit">Add part</button>
+    </form>
+    <h3>Saved parts (${items.length})</h3>
+    ${items.length ? items.map((p) => `
+    <div class="line">
+      <form method="post" action="/app/price-book/${p.id}/edit" class="row-actions" style="flex:1">
+        <input name="name" value="${esc(p.name)}" required style="flex:1">
+        <input name="part_number" value="${esc(p.part_number || '')}" placeholder="Part #" style="width:130px">
+        <input name="description" value="${esc(p.description || '')}" placeholder="Description" style="flex:1">
+        <input name="cost" inputmode="decimal" value="${(Number(p.cost_cents) / 100).toFixed(2)}" style="width:90px">
+        <button class="btn small" type="submit">Save</button>
+      </form>
+      <form method="post" action="/app/price-book/${p.id}/delete" class="inline" onsubmit="return confirm('Remove this part from the price book?')"><button class="btn small danger" type="submit">Delete</button></form>
+    </div>`).join('') : '<p class="muted">No parts saved yet — add your first one above.</p>'}
+  </section>`;
+  return layout({ title: 'Price Book', user, sub, company, flash, body });
+}
+
 // --- Billing ----------------------------------------------------------------------
 
 function billingPage({ user, sub, company, flash, events, checkoutState, tier, seatUsed }) {
@@ -1023,6 +1072,6 @@ module.exports = {
   layout, esc, landingPage, loginPage, signupPage, schedulePage, callFormPage,
   statusPill, callCard, jobPage, reportPage, invoicePage, completedPage,
   customersPage, customerDetailPage, logPage, settingsPage, usersPage,
-  billingPage, platformPage, payPage, profileBlock, proposalStatusPill,
+  billingPage, platformPage, payPage, profileBlock, proposalStatusPill, priceBookPage,
   signatureBlock, proposalFormPage, proposalDetailPage, proposalPage,
 };
