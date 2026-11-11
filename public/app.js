@@ -127,6 +127,26 @@ if (addPartBtn) {
     bindPartRemovers();
   });
 }
+// --- Price book picker ------------------------------------------------------------
+// On the job report, picking a saved part adds a filled row (description +
+// cost from the book, qty 1). The row is a normal part row after that.
+const addBookBtn = document.getElementById('add-price-book-part');
+if (addBookBtn) {
+  addBookBtn.addEventListener('click', () => {
+    const sel = document.getElementById('price-book-pick');
+    const opt = sel && sel.options[sel.selectedIndex];
+    if (!opt || !opt.value) return;
+    const row = document.querySelector('.part-row').cloneNode(true);
+    const inputs = row.querySelectorAll('input');
+    if (inputs[0]) inputs[0].value = '1';
+    if (inputs[1]) inputs[1].value = opt.dataset.desc || '';
+    if (inputs[2]) inputs[2].value = opt.dataset.cost || '';
+    document.getElementById('parts').appendChild(row);
+    bindPartRemovers();
+    sel.value = '';
+  });
+}
+
 function bindPartRemovers() {
   document.querySelectorAll('[data-remove-part]').forEach((btn) => {
     btn.onclick = () => {
