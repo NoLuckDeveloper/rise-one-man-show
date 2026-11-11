@@ -1001,15 +1001,19 @@ function priceBookPage({ user, sub, company, flash, items, query }) {
     </form>
     <h3>Saved parts (${items.length})</h3>
     ${items.length ? items.map((p) => `
-    <div class="line">
-      <form method="post" action="/app/price-book/${p.id}/edit" class="row-actions" style="flex:1">
-        <input name="name" value="${esc(p.name)}" required style="flex:1">
-        <input name="part_number" value="${esc(p.part_number || '')}" placeholder="Part #" style="width:130px">
-        <input name="description" value="${esc(p.description || '')}" placeholder="Description" style="flex:1">
-        <input name="cost" inputmode="decimal" value="${(Number(p.cost_cents) / 100).toFixed(2)}" style="width:90px">
-        <button class="btn small" type="submit">Save</button>
+    <div class="part-edit">
+      <form method="post" action="/app/price-book/${p.id}/edit">
+        <label>Name <input name="name" value="${esc(p.name)}" required></label>
+        <div class="grid2">
+          <label>Part number <input name="part_number" value="${esc(p.part_number || '')}" placeholder="Part #"></label>
+          <label>Cost $ <input name="cost" inputmode="decimal" value="${(Number(p.cost_cents) / 100).toFixed(2)}"></label>
+        </div>
+        <label>Description <input name="description" value="${esc(p.description || '')}" placeholder="Description"></label>
+        <div class="row-actions">
+          <button class="btn small" type="submit">Save</button>
+          <button class="btn small danger" type="submit" formaction="/app/price-book/${p.id}/delete" formnovalidate onclick="return confirm('Remove this part from the price book?')">Delete</button>
+        </div>
       </form>
-      <form method="post" action="/app/price-book/${p.id}/delete" class="inline" onsubmit="return confirm('Remove this part from the price book?')"><button class="btn small danger" type="submit">Delete</button></form>
     </div>`).join('') : '<p class="muted">No parts saved yet — add your first one above.</p>'}
   </section>`;
   return layout({ title: 'Price Book', user, sub, company, flash, body });
