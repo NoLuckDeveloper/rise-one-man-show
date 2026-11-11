@@ -3,6 +3,7 @@
 // the signature pad), and proposal/invoice email bodies (display modes and
 // company profile). No database needed: node tests/proposals.test.js
 const assert = require('node:assert');
+const fs = require('node:fs');
 const { computeProposal, parseImageDataUrl } = require('../server/util');
 const mailer = require('../server/mailer');
 const { signaturePng, blankPng, logoPng, dataUrl } = require('./png-helper');
@@ -283,6 +284,13 @@ const viewLaborTotals = computeProposal({
   assert.ok(!page.includes('class="tabs"'), 'old tab bar still rendered');
   const techPage = views.proposalsPage({ user: { role: 'tech' }, sub: viewSub, company, flash: null, proposals: [] });
   assert.ok(!techPage.includes('href="/app/proposals"'), 'techs see the Proposals link');
+}
+
+{
+  // The total row keeps its light box, but the text must be dark — the
+  // app's light text on the mint box was unreadable.
+  const css = fs.readFileSync(require.resolve('../public/style.css'), 'utf8');
+  assert.ok(/\.inv-table \.total td \{[^}]*color:\s*#000/.test(css), 'total row text is not black');
 }
 
 console.log('proposals.test.js PASS');
