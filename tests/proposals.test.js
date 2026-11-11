@@ -33,6 +33,34 @@ const { signaturePng, blankPng, logoPng, dataUrl } = require('./png-helper');
   assert.strictEqual(t.lines[0].lineCents, 500); // Math.round(1.5 * 333) = 500
   assert.strictEqual(t.totalCents, 500);
 }
+{
+  // Labor is a separate line from the parts: estimated hours x hourly
+  // rate, taxed with the rest of the subtotal like invoice labor.
+  const t = computeProposal({
+    items: [{ description: 'Garage door', qty: 1, unitCostCents: 120000 }],
+    taxPercent: 10,
+    laborHours: 4,
+    hourlyRateCents: 8500,
+  });
+  assert.strictEqual(t.laborHours, 4);
+  assert.strictEqual(t.laborRateCents, 8500);
+  assert.strictEqual(t.laborCents, 34000);
+  assert.strictEqual(t.subtotalCents, 154000);
+  assert.strictEqual(t.taxCents, 15400);
+  assert.strictEqual(t.totalCents, 169400);
+}
+{
+  // Labor-only proposal: no parts at all.
+  const t = computeProposal({ items: [], taxPercent: 0, laborHours: 3, hourlyRateCents: 5000 });
+  assert.strictEqual(t.laborCents, 15000);
+  assert.strictEqual(t.totalCents, 15000);
+}
+{
+  // No labor args at all: backward compatible, no labor line.
+  const t = computeProposal({ items: [{ description: 'X', qty: 1, unitCostCents: 100 }], taxPercent: 0 });
+  assert.strictEqual(t.laborCents, 0);
+  assert.strictEqual(t.totalCents, 100);
+}
 
 // --- parseImageDataUrl ---------------------------------------------------------
 const sig = signaturePng();
@@ -102,6 +130,27 @@ const totals = computeProposal({
   assert.ok(!totalOnly.text.includes('Faucet install'), 'total-only text email leaks line items');
 }
 {
+  // Labor shows as its own line in the proposal email, hidden in total-only.
+  const laborTotals = computeProposal({
+    items: [{ description: 'Faucet install', qty: 1, unitCostCents: 15000 }],
+    taxPercent: 10, laborHours: 2, hourlyRateCents: 10000,
+  });
+  const emailed = mailer.proposalEmailBodies({
+    company, call,
+    proposal: { display_mode: 'itemized', customer_note: '' },
+    totals: laborTotals, proposalUrl: 'https://example.test/proposal/abc', profile,
+  });
+  assert.ok(emailed.html.includes('Labor — 2 hrs × $100.00/hr'), 'proposal email hides labor line');
+  assert.ok(emailed.text.includes('Labor — 2 hrs × $100.00/hr'), 'proposal text email hides labor line');
+  assert.ok(emailed.html.includes('$200.00'), 'proposal email hides labor amount');
+  const totalOnlyLabor = mailer.proposalEmailBodies({
+    company, call,
+    proposal: { display_mode: 'total_only', customer_note: '' },
+    totals: laborTotals, proposalUrl: 'https://example.test/proposal/abc', profile,
+  });
+  assert.ok(!totalOnlyLabor.html.includes('Labor —'), 'total-only email leaks labor line');
+}
+{
   const inv = {
     hours: 1.5, laborCents: 15000,
     partLines: [{ description: 'Faucet', qty: 1, costCents: 4200, billedCents: 4200 }],
@@ -116,6 +165,34 @@ const totals = computeProposal({
   const withoutProfile = mailer.invoiceEmailBodies({ company, rootCall, inv, settings, payUrl: 'https://example.test/pay/x', profile: null });
   assert.ok(!withoutProfile.html.includes('<img'), 'invoice email without a profile renders a stray image');
   assert.ok(withoutProfile.subject.includes('Handyman Co'), 'invoice subject lost company name without profile');
+}
+
+// --- Proposal views: labor line --------------------------------------------------
+const views = require('../server/views');
+const viewUser = { role: 'owner' };
+const viewSub = { status: 'trialing', trial_end: new Date() };
+const viewLaborTotals = computeProposal({
+  items: [{ description: 'Garage door', qty: 1, unitCostCents: 120000 }],
+  taxPercent: 0, laborHours: 2, hourlyRateCents: 10000,
+});
+{
+  const form = views.proposalFormPage({ user: viewUser, sub: viewSub, company, flash: null, call: { customer_name: 'Test', description: 'Estimate to replace garage door' }, proposal: null, settings });
+  assert.ok(form.includes('name="labor_hours"'), 'proposal form missing labor hours input');
+  assert.ok(form.includes('Estimated hours to complete'), 'proposal form missing labor label');
+  assert.ok(form.includes('$100.00/hr'), 'proposal form missing hourly rate note');
+  const editForm = views.proposalFormPage({ user: viewUser, sub: viewSub, company, flash: null, call: { customer_name: 'Test', description: 'Estimate' }, proposal: { id: 1, status: 'draft', display_mode: 'itemized', items: [], labor_hours: 2.5, customer_note: '' }, settings });
+  assert.ok(editForm.includes('value="2.5"'), 'proposal edit form does not prefill labor hours');
+}
+{
+  const detail = views.proposalDetailPage({ user: viewUser, sub: viewSub, company, flash: null, call: { customer_name: 'Test', description: 'Estimate' }, proposal: { id: 1, status: 'draft', display_mode: 'itemized' }, totals: viewLaborTotals, settings, recipientEmail: 'c@example.test', resendConfigured: true });
+  assert.ok(detail.includes('Labor — 2 hrs × $100.00/hr'), 'proposal detail hides labor line');
+  assert.ok(detail.includes('$200.00'), 'proposal detail hides labor amount');
+  const noLabor = views.proposalDetailPage({ user: viewUser, sub: viewSub, company, flash: null, call: { customer_name: 'Test', description: 'Estimate' }, proposal: { id: 1, status: 'draft', display_mode: 'itemized' }, totals, settings, recipientEmail: null, resendConfigured: true });
+  assert.ok(!noLabor.includes('Labor —'), 'proposal detail shows a labor line with no labor');
+}
+{
+  const pub = views.proposalPage({ company, call: { customer_name: 'Test', description: 'Estimate' }, proposal: { id: 1, token: 'tok', status: 'sent', display_mode: 'itemized' }, totals: viewLaborTotals, profile: null, flash: null });
+  assert.ok(pub.includes('Labor — 2 hrs × $100.00/hr'), 'public proposal hides labor line');
 }
 
 console.log('proposals.test.js PASS');
