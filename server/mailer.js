@@ -2,7 +2,7 @@
 // Invoice email via the Resend REST API (no SDK — plain fetch, Node >= 20).
 // Configured only when RESEND_API_KEY is set; callers must check configured()
 // and degrade gracefully (the app predates email entirely — see README).
-const { esc, money, isoDate } = require('./util');
+const { esc, money, isoDate, parseImageDataUrl } = require('./util');
 
 const FROM = 'Rise One Man Show <invoices@riseonemanshow.com>';
 
@@ -17,11 +17,31 @@ function configured() {
 function profileHeaderHtml(profile) {
   if (!profile) return '';
   const contact = [profile.address, profile.phone, profile.email].filter(Boolean).join(' · ');
+  // Gmail strips data: images, so a data-URL logo is referenced as an
+  // inline CID attachment instead (see logoAttachment, attached by the
+  // send functions). A plain URL is used as-is. The dark tile behind the
+  // logo keeps a light (e.g. white) logo readable on the white email.
+  const logoSrc = profile.logoUrl && profile.logoUrl.startsWith('data:')
+    ? 'cid:company-logo'
+    : (profile.logoUrl || '');
   return `<div style="border-bottom:3px solid #7c3aed;padding-bottom:10px">
-    ${profile.logoUrl ? `<img src="${esc(profile.logoUrl)}" alt="" style="max-height:64px;max-width:220px;display:block;margin-bottom:8px">` : ''}
+    ${logoSrc ? `<img src="${esc(logoSrc)}" alt="" style="max-height:64px;max-width:220px;display:block;margin-bottom:8px;background:#0b1d33;padding:8px;border-radius:8px">` : ''}
     <strong style="font-size:18px">${esc(profile.name)}</strong>
     ${contact ? `<div style="color:#555;font-size:13px">${esc(contact)}</div>` : ''}
   </div>`;
+}
+
+// Inline attachment for the company logo, so it renders in Gmail (which
+// strips data: images). Returns null when there is no logo or it is not
+// a data URL. The HTML references it as cid:company-logo.
+function logoAttachment(profile) {
+  const url = profile && profile.logoUrl;
+  if (!url || !url.startsWith('data:')) return null;
+  const parsed = parseImageDataUrl(url);
+  if (!parsed) return null;
+  const b64 = url.split(',')[1];
+  if (!b64) return null;
+  return { filename: `logo.${parsed.ext}`, content: b64, content_id: 'company-logo' };
 }
 
 function profileHeaderText(profile) {
@@ -89,7 +109,7 @@ function proposalEmailBodies({ company, call, proposal, totals, proposalUrl, pro
   const lines = itemized
     ? [
         ...(totals.laborCents > 0 ? [`Labor — ${totals.laborHours} hrs × ${money(totals.laborRateCents)}/hr: ${money(totals.laborCents)}`] : []),
-        ...totals.lines.map((l) => `${l.description} — ${l.qty} × ${money(l.unitCostCents)}: ${money(l.lineCents)}`),
+        ...totals.lines.map((l) => `${l.description} — ${l.qty} × ${money(l.unitCostCents)}${totals.multiplierApplied ? ' (× multiplier)' : ''}: ${money(l.lineCents)}`),
         `Subtotal: ${money(totals.subtotalCents)}`,
         `Tax: ${money(totals.taxCents)}`,
       ]
@@ -113,7 +133,7 @@ function proposalEmailBodies({ company, call, proposal, totals, proposalUrl, pro
   const htmlRows = itemized
     ? [
         ...(totals.laborCents > 0 ? [`<tr><td>Labor — ${totals.laborHours} hrs × ${money(totals.laborRateCents)}/hr</td><td style="text-align:right">${money(totals.laborCents)}</td></tr>`] : []),
-        ...totals.lines.map((l) => `<tr><td>${esc(l.description)} — ${l.qty} × ${money(l.unitCostCents)}</td><td style="text-align:right">${money(l.lineCents)}</td></tr>`),
+        ...totals.lines.map((l) => `<tr><td>${esc(l.description)} — ${l.qty} × ${money(l.unitCostCents)}${totals.multiplierApplied ? ' (× multiplier)' : ''}</td><td style="text-align:right">${money(l.lineCents)}</td></tr>`),
         `<tr><td>Subtotal</td><td style="text-align:right">${money(totals.subtotalCents)}</td></tr>`,
         `<tr><td>Tax</td><td style="text-align:right">${money(totals.taxCents)}</td></tr>`,
       ].join('')
@@ -139,6 +159,8 @@ async function sendProposalEmail({ to, ownerEmail, company, call, proposal, tota
   if (!configured()) throw new Error('Email is not configured (RESEND_API_KEY is not set).');
   const { subject, text, html } = proposalEmailBodies({ company, call, proposal, totals, proposalUrl, profile });
   const payload = { from: FROM, to: [to], subject, text, html };
+  const logo = logoAttachment(profile);
+  if (logo) payload.attachments = [logo];
   if (ownerEmail) payload.reply_to = ownerEmail;
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -159,6 +181,8 @@ async function sendInvoiceEmail({ to, ownerEmail, company, rootCall, inv, settin
   if (!configured()) throw new Error('Email is not configured (RESEND_API_KEY is not set).');
   const { subject, text, html } = invoiceEmailBodies({ company, rootCall, inv, settings, payUrl, profile });
   const payload = { from: FROM, to: [to], subject, text, html };
+  const logo = logoAttachment(profile);
+  if (logo) payload.attachments = [logo];
   if (ownerEmail) payload.reply_to = ownerEmail;
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -175,4 +199,4 @@ async function sendInvoiceEmail({ to, ownerEmail, company, rootCall, inv, settin
   return res.json().catch(() => ({}));
 }
 
-module.exports = { configured, sendInvoiceEmail, invoiceEmailBodies, sendProposalEmail, proposalEmailBodies };
+module.exports = { configured, sendInvoiceEmail, invoiceEmailBodies, sendProposalEmail, proposalEmailBodies, logoAttachment };

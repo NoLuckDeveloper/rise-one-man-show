@@ -80,7 +80,7 @@ function subBanner(user, sub) {
   return billing.TEST_MODE ? `<div class="banner subtle">Billing is in TEST MODE — no real charges.${testTag}</div>` : '';
 }
 
-function layout({ title, user, sub, company, flash, body, print }) {
+function layout({ title, user, sub, company, flash, body, print, hideBrand }) {
   const nav = user
     ? `<nav class="tabs">
         ${user.role === 'platform'
@@ -105,11 +105,11 @@ function layout({ title, user, sub, company, flash, body, print }) {
 <link rel="icon" type="image/png" href="/favicon.png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 </head><body class="${print ? 'print' : ''}">
-<header class="brand">
+${hideBrand ? '' : `<header class="brand">
   <img class="logo-img" src="/logo-mark.png" alt="Rise One Man Show">
   <div class="wordmark"><span class="brand-rise">RISE</span> <span>ONE MAN SHOW</span></div>
   ${company ? `<div class="company-name">${esc(company.name)}</div>` : ''}
-</header>
+</header>`}
 ${nav}
 ${subBanner(user, sub)}
 <main>${flashHtml(flash)}${body}</main>
@@ -424,6 +424,7 @@ function proposalFormPage({ user, sub, company, flash, call, proposal, settings 
   const p = proposal || {};
   const items = Array.isArray(p.items) ? p.items : [];
   const editing = !!proposal;
+  const mult = Number(settings && settings.parts_multiplier != null ? settings.parts_multiplier : 1);
   const itemRows = (items.length ? items : [{ qty: '', description: '', unitCostCents: '' }]).map((it) => `
     <div class="part-row">
       <input name="item_qty" type="number" step="any" min="0" placeholder="Qty" value="${it.qty !== undefined && it.qty !== '' ? esc(it.qty) : ''}">
@@ -445,7 +446,7 @@ function proposalFormPage({ user, sub, company, flash, call, proposal, settings 
         <div id="parts">${itemRows}</div>
         <button type="button" class="btn small" id="add-part">+ Add another line</button>
       </fieldset>
-      <p class="muted">Tax (${esc(settings ? settings.tax_percent : 0)}%) is added automatically from Settings → Invoicing.</p>
+      <p class="muted">Tax (${esc(settings ? settings.tax_percent : 0)}%) is added automatically from Settings → Invoicing.${mult !== 1 ? ` Parts are billed at ${mult}× cost (parts multiplier).` : ''}</p>
       <fieldset><legend>What the customer sees</legend>
         <label class="check"><input type="radio" name="display_mode" value="itemized" ${p.display_mode !== 'total_only' ? 'checked' : ''}> Itemized — every line, then the total</label>
         <label class="check"><input type="radio" name="display_mode" value="total_only" ${p.display_mode === 'total_only' ? 'checked' : ''}> Total only — just the final amount</label>
@@ -462,7 +463,7 @@ function proposalDetailPage({ user, sub, company, flash, call, proposal, totals,
   const p = proposal;
   const itemized = p.display_mode !== 'total_only';
   const laborRow = totals.laborCents > 0 ? `<tr><td>Labor — ${esc(totals.laborHours)} hrs × ${money(totals.laborRateCents)}/hr</td><td class="r">${money(totals.laborCents)}</td></tr>` : '';
-  const rows = itemized ? totals.lines.map((l) => `<tr><td>${esc(l.description)} — ${l.qty} × ${money(l.unitCostCents)}</td><td class="r">${money(l.lineCents)}</td></tr>`).join('') : '';
+  const rows = itemized ? totals.lines.map((l) => `<tr><td>${esc(l.description)} — ${l.qty} × ${money(l.unitCostCents)}${totals.multiplierApplied ? ' (× multiplier)' : ''}</td><td class="r">${money(l.lineCents)}</td></tr>`).join('') : '';
   let actions = '';
   if (p.status === 'draft') {
     actions = `<form method="post" action="/app/calls/${call.id}/proposals/${p.id}/send" class="inline">
@@ -488,6 +489,7 @@ function proposalDetailPage({ user, sub, company, flash, call, proposal, totals,
       <tr><td>Tax (${esc(settings ? settings.tax_percent : 0)}%)</td><td class="r">${money(totals.taxCents)}</td></tr>` : ''}
       <tr class="total"><td>Total</td><td class="r">${money(totals.totalCents)}</td></tr>
     </table>
+    ${totals.multiplierApplied ? '<p class="muted">Parts billed at a markup over cost (parts multiplier applied).</p>' : ''}
     ${!resendConfigured && (p.status === 'draft' || p.status === 'changes_requested') ? '<p class="muted">Email sending is not configured on the server yet (needs RESEND_API_KEY) — sending will show a notice until it is.</p>' : ''}
     <div class="row-actions">${actions}
       <a class="btn small" href="/app/calls/${call.id}">Back to job</a>
@@ -508,7 +510,7 @@ function proposalPage({ company, call, proposal, totals, profile, flash }) {
   const itemized = p.display_mode !== 'total_only';
   const decided = p.status === 'approved' || p.status === 'changes_requested';
   const laborRow = totals.laborCents > 0 ? `<tr><td>Labor — ${esc(totals.laborHours)} hrs × ${money(totals.laborRateCents)}/hr</td><td class="r">${money(totals.laborCents)}</td></tr>` : '';
-  const rows = itemized ? totals.lines.map((l) => `<tr><td>${esc(l.description)} — ${l.qty} × ${money(l.unitCostCents)}</td><td class="r">${money(l.lineCents)}</td></tr>`).join('') : '';
+  const rows = itemized ? totals.lines.map((l) => `<tr><td>${esc(l.description)} — ${l.qty} × ${money(l.unitCostCents)}${totals.multiplierApplied ? ' (× multiplier)' : ''}</td><td class="r">${money(l.lineCents)}</td></tr>`).join('') : '';
   let decision = '';
   if (p.status === 'approved') {
     decision = `<div class="flash ok">✓ Approved${p.decided_at ? ' on ' + esc(new Date(p.decided_at).toLocaleString()) : ''} — thank you!</div>${signatureBlock(p)}`;
@@ -536,7 +538,6 @@ function proposalPage({ company, call, proposal, totals, profile, flash }) {
   const body = `
   <section class="invoice">
     <div class="inv-head">
-      <div><img class="logo-img" src="/logo-mark.png" alt="Rise One Man Show"><strong>RISE ONE MAN SHOW</strong></div>
       <div><h2>PROPOSAL</h2><p>${esc(company.name)}</p></div>
     </div>
     ${profileBlock(profile)}
@@ -553,7 +554,7 @@ function proposalPage({ company, call, proposal, totals, profile, flash }) {
     ${actions}
     <p class="muted" style="text-align:center;margin-top:18px">Powered by Rise One Man Show</p>
   </section>`;
-  return layout({ title: 'Proposal', flash, body });
+  return layout({ title: 'Proposal', flash, body, hideBrand: true });
 }
 
 // --- Job report --------------------------------------------------------------

@@ -159,8 +159,9 @@ function companyProfile(company, settings) {
   };
 }
 
-// The email header inlines the logo data URL directly; a data URL is
-// self-contained, so no absolute URL is needed.
+// The email header references the logo as a CID attachment (see
+// mailer.logoAttachment) because Gmail strips data: images; the data
+// URL itself is carried in logoUrl so the mailer can attach it.
 function profileForEmail(profile) {
   if (!profile) return null;
   return { ...profile, logoUrl: profile.logoDataUrl || '' };
@@ -261,13 +262,16 @@ async function deliverInvoiceEmail({ company, result }) {
 
 // --- Proposals ---------------------------------------------------------------
 // Totals for a proposal, using the same tax % invoices use. The labor
-// line (estimated hours) bills at the company's hourly rate.
+// line (estimated hours) bills at the company's hourly rate, and the parts
+// lines bill at cost x the company's parts multiplier — exactly like an
+// invoice, so a proposal and its invoice agree.
 function proposalTotals(proposal, settings) {
   return computeProposal({
     items: Array.isArray(proposal.items) ? proposal.items : [],
     taxPercent: Number(settings ? settings.tax_percent : 0),
     laborHours: proposal.labor_hours,
     hourlyRateCents: settings ? settings.hourly_rate_cents : 0,
+    partsMultiplier: settings ? settings.parts_multiplier : 1,
   });
 }
 

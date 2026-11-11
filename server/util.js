@@ -79,7 +79,11 @@ function computeInvoice({ hours, parts, hourlyRateCents, taxPercent, partsMultip
 // shape as invoice parts minus the parts multiplier (proposals bill lines
 // at their stated unit cost). Tax % comes from Settings -> Invoicing, the
 // same rate invoices use.
-function computeProposal({ items, taxPercent, laborHours, hourlyRateCents }) {
+function computeProposal({ items, taxPercent, laborHours, hourlyRateCents, partsMultiplier }) {
+  // Parts are entered at COST and billed at cost x the parts multiplier —
+  // the same markup invoices use. The line still shows the entered cost
+  // (with a "(× multiplier)" marker in the views); lineCents is billed.
+  const mult = Number(partsMultiplier || 1);
   const lines = (items || []).map((it) => {
     const qty = Number(it.qty || 0);
     const unitCostCents = Number(it.unitCostCents || 0);
@@ -87,7 +91,7 @@ function computeProposal({ items, taxPercent, laborHours, hourlyRateCents }) {
       description: it.description || '',
       qty,
       unitCostCents,
-      lineCents: Math.round(qty * unitCostCents),
+      lineCents: Math.round(qty * unitCostCents * mult),
     };
   });
   // Labor is a separate line from the parts: estimated hours to complete
@@ -99,7 +103,7 @@ function computeProposal({ items, taxPercent, laborHours, hourlyRateCents }) {
   const partsCents = lines.reduce((s, l) => s + l.lineCents, 0);
   const subtotalCents = partsCents + laborCents;
   const taxCents = Math.round(subtotalCents * (Number(taxPercent || 0) / 100));
-  return { lines, laborHours: hours, laborRateCents: rateCents, laborCents, subtotalCents, taxCents, totalCents: subtotalCents + taxCents };
+  return { lines, laborHours: hours, laborRateCents: rateCents, laborCents, subtotalCents, taxCents, totalCents: subtotalCents + taxCents, multiplierApplied: mult !== 1 };
 }
 
 // Validate an image data URL (logo uploads, signature-pad captures) and
