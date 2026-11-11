@@ -61,6 +61,28 @@ const { signaturePng, blankPng, logoPng, dataUrl } = require('./png-helper');
   assert.strictEqual(t.laborCents, 0);
   assert.strictEqual(t.totalCents, 100);
 }
+{
+  // Parts are entered at cost and billed at cost x the parts multiplier,
+  // like invoice parts. Jake's garage-door numbers: door cost $1,200 at
+  // 1.8x = $2,160; labor 3 hrs x $95 = $285; subtotal $2,445; tax 8.25%.
+  const t = computeProposal({
+    items: [{ description: '16x7 Garage Door', qty: 1, unitCostCents: 120000 }],
+    taxPercent: 8.25, laborHours: 3, hourlyRateCents: 9500, partsMultiplier: 1.8,
+  });
+  assert.strictEqual(t.lines[0].unitCostCents, 120000);
+  assert.strictEqual(t.lines[0].lineCents, 216000);
+  assert.strictEqual(t.laborCents, 28500);
+  assert.strictEqual(t.subtotalCents, 244500);
+  assert.strictEqual(t.taxCents, 20171);
+  assert.strictEqual(t.totalCents, 264671);
+  assert.strictEqual(t.multiplierApplied, true);
+}
+{
+  // No multiplier (or 1x): billed equals cost, no markup flag.
+  const t = computeProposal({ items: [{ description: 'X', qty: 2, unitCostCents: 5000 }], taxPercent: 0 });
+  assert.strictEqual(t.lines[0].lineCents, 10000);
+  assert.strictEqual(t.multiplierApplied, false);
+}
 
 // --- parseImageDataUrl ---------------------------------------------------------
 const sig = signaturePng();
@@ -114,7 +136,10 @@ const totals = computeProposal({
   assert.ok(itemized.html.includes('Faucet install'), 'itemized email hides line items');
   assert.ok(itemized.html.includes('Supply pipe'), 'itemized email hides second line');
   assert.ok(itemized.html.includes('Two-day job.'), 'itemized email hides customer note');
-  assert.ok(itemized.html.includes(profile.logoUrl), 'proposal email hides company logo');
+  // A data-URL logo is referenced as a CID attachment (Gmail strips
+  // data: images), never inlined.
+  assert.ok(itemized.html.includes('cid:company-logo'), 'proposal email hides company logo');
+  assert.ok(!itemized.html.includes(profile.logoUrl), 'proposal email inlines the logo as a data URL (Gmail strips those)');
   assert.ok(itemized.html.includes('12 Main St'), 'proposal email hides company address');
   assert.ok(itemized.text.includes('Faucet install'), 'itemized text email hides line items');
 
@@ -158,7 +183,8 @@ const totals = computeProposal({
   };
   const rootCall = { customer_name: 'Sarah Miller', description: 'Kitchen faucet leaking' };
   const withProfile = mailer.invoiceEmailBodies({ company, rootCall, inv, settings, payUrl: 'https://example.test/pay/x', profile });
-  assert.ok(withProfile.html.includes(profile.logoUrl), 'invoice email hides company logo');
+  assert.ok(withProfile.html.includes('cid:company-logo'), 'invoice email hides company logo');
+  assert.ok(!withProfile.html.includes(profile.logoUrl), 'invoice email inlines the logo as a data URL (Gmail strips those)');
   assert.ok(withProfile.html.includes('12 Main St'), 'invoice email hides company address');
   assert.ok(withProfile.html.includes('555-0100'), 'invoice email hides company phone');
   assert.ok(withProfile.text.includes('12 Main St'), 'invoice text email hides company address');
@@ -180,6 +206,7 @@ const viewLaborTotals = computeProposal({
   assert.ok(form.includes('name="labor_hours"'), 'proposal form missing labor hours input');
   assert.ok(form.includes('Estimated hours to complete'), 'proposal form missing labor label');
   assert.ok(form.includes('$100.00/hr'), 'proposal form missing hourly rate note');
+  assert.ok(!form.includes('× cost'), 'proposal form shows multiplier note at 1x');
   const editForm = views.proposalFormPage({ user: viewUser, sub: viewSub, company, flash: null, call: { customer_name: 'Test', description: 'Estimate' }, proposal: { id: 1, status: 'draft', display_mode: 'itemized', items: [], labor_hours: 2.5, customer_note: '' }, settings });
   assert.ok(editForm.includes('value="2.5"'), 'proposal edit form does not prefill labor hours');
 }
@@ -193,6 +220,35 @@ const viewLaborTotals = computeProposal({
 {
   const pub = views.proposalPage({ company, call: { customer_name: 'Test', description: 'Estimate' }, proposal: { id: 1, token: 'tok', status: 'sent', display_mode: 'itemized' }, totals: viewLaborTotals, profile: null, flash: null });
   assert.ok(pub.includes('Labor — 2 hrs × $100.00/hr'), 'public proposal hides labor line');
+}
+{
+  // Parts multiplier: the form says so, the detail page marks the lines
+  // and notes the markup, and the public proposal page carries no Rise
+  // branding — only the company's own.
+  const multSettings = { ...settings, parts_multiplier: 1.8 };
+  const multForm = views.proposalFormPage({ user: viewUser, sub: viewSub, company, flash: null, call: { customer_name: 'Test', description: 'Estimate' }, proposal: null, settings: multSettings });
+  assert.ok(multForm.includes('1.8× cost'), 'proposal form missing parts multiplier note');
+  const multTotals = computeProposal({ items: [{ description: 'Garage Door', qty: 1, unitCostCents: 120000 }], taxPercent: 0, partsMultiplier: 1.8 });
+  const multDetail = views.proposalDetailPage({ user: viewUser, sub: viewSub, company, flash: null, call: { customer_name: 'Test', description: 'Estimate' }, proposal: { id: 1, status: 'draft', display_mode: 'itemized' }, totals: multTotals, settings: multSettings, recipientEmail: null, resendConfigured: true });
+  assert.ok(multDetail.includes('(× multiplier)'), 'proposal detail missing multiplier marker');
+  assert.ok(multDetail.includes('Parts billed at a markup over cost'), 'proposal detail missing markup note');
+  const multPub = views.proposalPage({ company, call: { customer_name: 'Test', description: 'Estimate' }, proposal: { id: 1, token: 'tok', status: 'sent', display_mode: 'itemized' }, totals: multTotals, profile: null, flash: null });
+  assert.ok(!multPub.includes('logo-mark.png'), 'public proposal still shows the Rise logo');
+  assert.ok(!multPub.includes('class="brand-rise"'), 'public proposal still shows the Rise wordmark');
+  assert.ok(multPub.includes('(× multiplier)'), 'public proposal missing multiplier marker');
+}
+
+{
+  // logoAttachment: a data-URL logo becomes a CID attachment; anything
+  // else yields nothing to attach.
+  const att = mailer.logoAttachment(profile);
+  assert.ok(att, 'logoAttachment returned nothing for a data-URL logo');
+  assert.strictEqual(att.content_id, 'company-logo');
+  assert.strictEqual(att.filename, 'logo.png');
+  assert.ok(att.content.length > 100, 'logo attachment content unexpectedly short');
+  assert.strictEqual(mailer.logoAttachment(null), null, 'logoAttachment should be null without a profile');
+  assert.strictEqual(mailer.logoAttachment({ logoUrl: 'https://example.test/logo.png' }), null, 'logoAttachment should be null for a plain URL');
+  assert.strictEqual(mailer.logoAttachment({ logoUrl: '' }), null, 'logoAttachment should be null without a logo');
 }
 
 console.log('proposals.test.js PASS');
