@@ -79,7 +79,7 @@ function computeInvoice({ hours, parts, hourlyRateCents, taxPercent, partsMultip
 // shape as invoice parts minus the parts multiplier (proposals bill lines
 // at their stated unit cost). Tax % comes from Settings -> Invoicing, the
 // same rate invoices use.
-function computeProposal({ items, taxPercent }) {
+function computeProposal({ items, taxPercent, laborHours, hourlyRateCents }) {
   const lines = (items || []).map((it) => {
     const qty = Number(it.qty || 0);
     const unitCostCents = Number(it.unitCostCents || 0);
@@ -90,9 +90,16 @@ function computeProposal({ items, taxPercent }) {
       lineCents: Math.round(qty * unitCostCents),
     };
   });
-  const subtotalCents = lines.reduce((s, l) => s + l.lineCents, 0);
+  // Labor is a separate line from the parts: estimated hours to complete
+  // the job, billed at the company's hourly rate. No hours (or a zero
+  // rate) means no labor line at all.
+  const hours = Number(laborHours || 0);
+  const rateCents = Number(hourlyRateCents || 0);
+  const laborCents = hours > 0 && rateCents > 0 ? Math.round(hours * rateCents) : 0;
+  const partsCents = lines.reduce((s, l) => s + l.lineCents, 0);
+  const subtotalCents = partsCents + laborCents;
   const taxCents = Math.round(subtotalCents * (Number(taxPercent || 0) / 100));
-  return { lines, subtotalCents, taxCents, totalCents: subtotalCents + taxCents };
+  return { lines, laborHours: hours, laborRateCents: rateCents, laborCents, subtotalCents, taxCents, totalCents: subtotalCents + taxCents };
 }
 
 // Validate an image data URL (logo uploads, signature-pad captures) and

@@ -88,6 +88,7 @@ function proposalEmailBodies({ company, call, proposal, totals, proposalUrl, pro
   const itemized = proposal.display_mode !== 'total_only';
   const lines = itemized
     ? [
+        ...(totals.laborCents > 0 ? [`Labor — ${totals.laborHours} hrs × ${money(totals.laborRateCents)}/hr: ${money(totals.laborCents)}`] : []),
         ...totals.lines.map((l) => `${l.description} — ${l.qty} × ${money(l.unitCostCents)}: ${money(l.lineCents)}`),
         `Subtotal: ${money(totals.subtotalCents)}`,
         `Tax: ${money(totals.taxCents)}`,
@@ -111,6 +112,7 @@ function proposalEmailBodies({ company, call, proposal, totals, proposalUrl, pro
 
   const htmlRows = itemized
     ? [
+        ...(totals.laborCents > 0 ? [`<tr><td>Labor — ${totals.laborHours} hrs × ${money(totals.laborRateCents)}/hr</td><td style="text-align:right">${money(totals.laborCents)}</td></tr>`] : []),
         ...totals.lines.map((l) => `<tr><td>${esc(l.description)} — ${l.qty} × ${money(l.unitCostCents)}</td><td style="text-align:right">${money(l.lineCents)}</td></tr>`),
         `<tr><td>Subtotal</td><td style="text-align:right">${money(totals.subtotalCents)}</td></tr>`,
         `<tr><td>Tax</td><td style="text-align:right">${money(totals.taxCents)}</td></tr>`,

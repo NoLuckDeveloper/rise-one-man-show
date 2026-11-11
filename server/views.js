@@ -437,6 +437,10 @@ function proposalFormPage({ user, sub, company, flash, call, proposal, settings 
     <p><strong>${esc(call.customer_name)}</strong> — ${esc(call.description || '')}</p>
     ${p.status === 'changes_requested' && p.customer_decision_note ? `<p><strong>Customer asked for changes:</strong> ${esc(p.customer_decision_note)}</p>` : ''}
     <form method="post" action="${editing ? `/app/calls/${call.id}/proposals/${p.id}/edit` : `/app/calls/${call.id}/proposals`}">
+      <fieldset><legend>Labor — separate from parts</legend>
+        <label>Estimated hours to complete <input name="labor_hours" type="number" step="any" min="0" placeholder="e.g. 4.5" value="${p.labor_hours !== null && p.labor_hours !== undefined ? esc(p.labor_hours) : ''}"></label>
+        <p class="muted">Billed at your hourly rate ${money(settings ? settings.hourly_rate_cents : 0)}/hr from Settings → Invoicing. Leave blank for no labor line.</p>
+      </fieldset>
       <fieldset><legend>Line items — Quantity · Description · Unit cost</legend>
         <div id="parts">${itemRows}</div>
         <button type="button" class="btn small" id="add-part">+ Add another line</button>
@@ -457,6 +461,7 @@ function proposalFormPage({ user, sub, company, flash, call, proposal, settings 
 function proposalDetailPage({ user, sub, company, flash, call, proposal, totals, settings, recipientEmail, resendConfigured }) {
   const p = proposal;
   const itemized = p.display_mode !== 'total_only';
+  const laborRow = totals.laborCents > 0 ? `<tr><td>Labor — ${esc(totals.laborHours)} hrs × ${money(totals.laborRateCents)}/hr</td><td class="r">${money(totals.laborCents)}</td></tr>` : '';
   const rows = itemized ? totals.lines.map((l) => `<tr><td>${esc(l.description)} — ${l.qty} × ${money(l.unitCostCents)}</td><td class="r">${money(l.lineCents)}</td></tr>`).join('') : '';
   let actions = '';
   if (p.status === 'draft') {
@@ -478,7 +483,7 @@ function proposalDetailPage({ user, sub, company, flash, call, proposal, totals,
     ${signatureBlock(p)}
     <table class="inv-table">
       <tr><th>Description</th><th class="r">Amount</th></tr>
-      ${itemized ? rows : `<tr><td>Proposal total (customer sees total only)</td><td class="r">${money(totals.totalCents)}</td></tr>`}
+      ${itemized ? laborRow + rows : `<tr><td>Proposal total (customer sees total only)</td><td class="r">${money(totals.totalCents)}</td></tr>`}
       ${itemized ? `<tr><td>Subtotal</td><td class="r">${money(totals.subtotalCents)}</td></tr>
       <tr><td>Tax (${esc(settings ? settings.tax_percent : 0)}%)</td><td class="r">${money(totals.taxCents)}</td></tr>` : ''}
       <tr class="total"><td>Total</td><td class="r">${money(totals.totalCents)}</td></tr>
@@ -502,6 +507,7 @@ function proposalPage({ company, call, proposal, totals, profile, flash }) {
   const p = proposal;
   const itemized = p.display_mode !== 'total_only';
   const decided = p.status === 'approved' || p.status === 'changes_requested';
+  const laborRow = totals.laborCents > 0 ? `<tr><td>Labor — ${esc(totals.laborHours)} hrs × ${money(totals.laborRateCents)}/hr</td><td class="r">${money(totals.laborCents)}</td></tr>` : '';
   const rows = itemized ? totals.lines.map((l) => `<tr><td>${esc(l.description)} — ${l.qty} × ${money(l.unitCostCents)}</td><td class="r">${money(l.lineCents)}</td></tr>`).join('') : '';
   let decision = '';
   if (p.status === 'approved') {
@@ -538,7 +544,7 @@ function proposalPage({ company, call, proposal, totals, profile, flash }) {
     ${p.customer_note ? `<p>${esc(p.customer_note)}</p>` : ''}
     <table class="inv-table">
       <tr><th>Description</th><th class="r">Amount</th></tr>
-      ${itemized ? rows : ''}
+      ${itemized ? laborRow + rows : ''}
       ${itemized ? `<tr><td>Subtotal</td><td class="r">${money(totals.subtotalCents)}</td></tr>
       <tr><td>Tax</td><td class="r">${money(totals.taxCents)}</td></tr>` : ''}
       <tr class="total"><td>Total</td><td class="r">${money(totals.totalCents)}</td></tr>

@@ -304,6 +304,12 @@ CREATE TABLE IF NOT EXISTS proposals (
 CREATE INDEX IF NOT EXISTS idx_proposals_company ON proposals(company_id);
 CREATE INDEX IF NOT EXISTS idx_proposals_call ON proposals(call_id);
 
+-- Labor line on a proposal, separate from the parts line items: the
+-- estimated hours to complete the job. NULL = no labor line. The amount
+-- is hours x the company's hourly rate (company_settings) at display
+-- time — the same rate invoices use — so it stays in step with Settings.
+ALTER TABLE proposals ADD COLUMN IF NOT EXISTS labor_hours NUMERIC;
+
 -- Native-app GPS positions for open travel trips (background tracking).
 -- One row per fix; trip miles accumulate from consecutive points server-side.
 CREATE TABLE IF NOT EXISTS trip_positions (

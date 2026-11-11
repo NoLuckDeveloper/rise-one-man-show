@@ -260,12 +260,25 @@ async function deliverInvoiceEmail({ company, result }) {
 }
 
 // --- Proposals ---------------------------------------------------------------
-// Totals for a proposal, using the same tax % invoices use.
+// Totals for a proposal, using the same tax % invoices use. The labor
+// line (estimated hours) bills at the company's hourly rate.
 function proposalTotals(proposal, settings) {
   return computeProposal({
     items: Array.isArray(proposal.items) ? proposal.items : [],
     taxPercent: Number(settings ? settings.tax_percent : 0),
+    laborHours: proposal.labor_hours,
+    hourlyRateCents: settings ? settings.hourly_rate_cents : 0,
   });
+}
+
+// The labor line's estimated hours: blank means no labor line; otherwise a
+// number of hours, 0 or more.
+function parseLaborHours(v) {
+  const raw = String(v || '').trim();
+  if (!raw) return null;
+  const n = parseFloat(raw);
+  if (!Number.isFinite(n) || n < 0) throw new Error('Estimated hours must be 0 or more.');
+  return n;
 }
 
 function proposalUrl(proposal) {
@@ -764,16 +777,22 @@ app.get('/app/calls/:id/proposals/new', auth.requireRole('owner', 'admin'), load
 
 app.post('/app/calls/:id/proposals', auth.requireRole('owner', 'admin'), loadCall, async (req, res) => {
   const items = parseProposalItems(req.body);
-  if (!items.length) return back(res, `/app/calls/${req.call.id}/proposals/new`, 'err', 'Add at least one line item.');
+  let laborHours = null;
+  try {
+    laborHours = parseLaborHours(req.body.labor_hours);
+  } catch (e) {
+    return back(res, `/app/calls/${req.call.id}/proposals/new`, 'err', e.message);
+  }
+  if (!items.length && !laborHours) return back(res, `/app/calls/${req.call.id}/proposals/new`, 'err', 'Add at least one line item or estimated labor hours.');
   const displayMode = req.body.display_mode === 'total_only' ? 'total_only' : 'itemized';
   const note = String(req.body.customer_note || '').trim() || null;
   let proposal = null;
   for (let attempt = 0; attempt < 2 && !proposal; attempt++) {
     try {
       proposal = await db.one(
-        `INSERT INTO proposals (company_id, call_id, token, status, display_mode, items, customer_note)
-         VALUES ($1,$2,$3,'draft',$4,$5,$6) RETURNING *`,
-        [req.companyId, req.call.id, crypto.randomBytes(24).toString('base64url'), displayMode, JSON.stringify(items), note]);
+        `INSERT INTO proposals (company_id, call_id, token, status, display_mode, items, labor_hours, customer_note)
+         VALUES ($1,$2,$3,'draft',$4,$5,$6,$7) RETURNING *`,
+        [req.companyId, req.call.id, crypto.randomBytes(24).toString('base64url'), displayMode, JSON.stringify(items), laborHours, note]);
     } catch (e) {
       if (e.code !== '23505' || attempt === 1) throw e; // token unique_violation
     }
@@ -802,11 +821,17 @@ app.post('/app/calls/:id/proposals/:pid/edit', auth.requireRole('owner', 'admin'
     return back(res, `/app/calls/${req.call.id}/proposals/${req.proposal.id}`, 'err', 'Only a draft or changes-requested proposal can be edited.');
   }
   const items = parseProposalItems(req.body);
-  if (!items.length) return back(res, `/app/calls/${req.call.id}/proposals/${req.proposal.id}/edit`, 'err', 'Add at least one line item.');
+  let laborHours = null;
+  try {
+    laborHours = parseLaborHours(req.body.labor_hours);
+  } catch (e) {
+    return back(res, `/app/calls/${req.call.id}/proposals/${req.proposal.id}/edit`, 'err', e.message);
+  }
+  if (!items.length && !laborHours) return back(res, `/app/calls/${req.call.id}/proposals/${req.proposal.id}/edit`, 'err', 'Add at least one line item or estimated labor hours.');
   const displayMode = req.body.display_mode === 'total_only' ? 'total_only' : 'itemized';
   const note = String(req.body.customer_note || '').trim() || null;
-  await db.q('UPDATE proposals SET items=$2, display_mode=$3, customer_note=$4, updated_at=now() WHERE id=$1',
-    [req.proposal.id, JSON.stringify(items), displayMode, note]);
+  await db.q('UPDATE proposals SET items=$2, labor_hours=$3, display_mode=$4, customer_note=$5, updated_at=now() WHERE id=$1',
+    [req.proposal.id, JSON.stringify(items), laborHours, displayMode, note]);
   res.redirect(`/app/calls/${req.call.id}/proposals/${req.proposal.id}?msg=` + encodeURIComponent('Proposal saved.'));
 });
 
