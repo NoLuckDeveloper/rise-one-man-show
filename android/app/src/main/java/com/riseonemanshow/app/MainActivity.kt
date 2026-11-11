@@ -5,11 +5,13 @@ import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
 import android.webkit.JavascriptInterface
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -59,6 +61,30 @@ class MainActivity : AppCompatActivity() {
     private val notificationLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* best effort only */ }
 
+    // <input type="file"> in the WebView (company logo, job-report photos)
+    // does nothing unless the app answers the chooser itself: open the
+    // system file picker and hand the picked URI(s) back to the WebView.
+    // The picker grants the app URI permission, so no storage permission
+    // is needed. Without this override, tapping "Choose File" is dead.
+    private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
+
+    private val fileChooserLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val callback = fileChooserCallback
+            fileChooserCallback = null
+            if (result.resultCode == RESULT_OK) {
+                val data = result.data
+                val uris = when {
+                    data?.clipData != null -> Array(data.clipData!!.itemCount) { i -> data.clipData!!.getItemAt(i).uri }
+                    data?.data != null -> arrayOf(data.data!!)
+                    else -> emptyArray()
+                }
+                callback?.onReceiveValue(uris)
+            } else {
+                callback?.onReceiveValue(null)
+            }
+        }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,6 +105,23 @@ class MainActivity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean = false
         }
         webView.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                view: WebView,
+                filePathCallback: ValueCallback<Array<Uri>>,
+                fileChooserParams: FileChooserParams
+            ): Boolean {
+                // Cancel any chooser still waiting, then open the picker.
+                fileChooserCallback?.onReceiveValue(null)
+                fileChooserCallback = filePathCallback
+                return try {
+                    fileChooserLauncher.launch(fileChooserParams.createIntent())
+                    true
+                } catch (e: Exception) {
+                    fileChooserCallback = null
+                    false
+                }
+            }
+
             override fun onGeolocationPermissionsShowPrompt(
                 origin: String,
                 callback: GeolocationPermissions.Callback
