@@ -41,6 +41,7 @@ const companies = [
   { plan_tier: 'team6', sub_status: 'canceled' },
   { plan_tier: 'solo', sub_status: 'past_due' },
   { plan_tier: 'solo', sub_status: 'trial_ended' },
+  { plan_tier: 'team10', sub_status: 'free' }, // complimentary: $0 MRR, no tier count
   { plan_tier: 'mystery', sub_status: 'active' }, // unknown tier -> solo rate
 ];
 assert.strictEqual(computeMrr(companies), 1099 + 2849 + 6499 + 1099);

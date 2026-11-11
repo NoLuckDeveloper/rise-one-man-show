@@ -46,4 +46,28 @@ assert.ok(platformHtml.includes('$47.99'), 'platform MRR not tier-based');
 assert.ok(platformHtml.includes('Team · up to 6'), 'platform missing tier breakdown');
 assert.ok(!platformHtml.includes('active * 1099'), 'platform still shows old MRR math');
 
+// Free access: billing page shows the grant and hides plan switching;
+// platform page counts the free company and offers removal, not a trial.
+const freeSub = { status: 'free', trial_start: new Date(), trial_end: new Date(), current_period_end: null, payment_last4: null, payment_brand: null };
+const freeBilling = views.billingPage({ user, sub: freeSub, company, flash: null, events: [], checkoutState: null, tier: tiers.tierById('solo'), seatUsed: 1 });
+assert.ok(freeBilling.includes('Free access'), 'billing missing free access copy');
+assert.ok(freeBilling.includes('unlimited'), 'billing missing unlimited copy');
+assert.ok(!freeBilling.includes('action="/app/billing/plan-change"'), 'billing still offers plan switch to a free company');
+assert.ok(freeBilling.includes('never expires'), 'billing missing never-expires copy');
+
+const freePlatform = views.platformPage({
+  user: { role: 'platform' }, flash: null, demoId: null,
+  companies: [{ id: 2, name: 'B', created_at: new Date(), user_count: 1, sub_status: 'free', plan_tier: 'solo', trial_end: new Date() }],
+  totals: { companies: 1, trialing: 0, active: 0, free: 1, mrrCents: 0, breakdown: tiers.tierBreakdown([{ plan_tier: 'solo', sub_status: 'free' }]) },
+});
+assert.ok(freePlatform.includes('Free: <strong>1</strong>'), 'platform missing free count');
+assert.ok(freePlatform.includes('Remove free access'), 'platform missing remove-free button');
+assert.ok(freePlatform.includes('Free access (unlimited)'), 'platform missing free label');
+assert.ok(freePlatform.includes('action="/platform/companies/2/remove-free"'), 'platform missing remove-free action');
+assert.ok(!freePlatform.includes('Make free (unlimited)'), 'platform still offers make-free on a free company');
+
+const freeUsers = views.usersPage({ user, sub: freeSub, company, flash: null, users: [{ id: 1, name: 'O', email: 'o@x', role: 'owner', active: true }], tier: tiers.tierById('solo'), seatUsed: 1 });
+assert.ok(freeUsers.includes('unlimited seats (free access)'), 'users missing unlimited seats copy');
+assert.ok(!freeUsers.includes('Seat limit reached'), 'users still warns at cap for a free company');
+
 console.log('views-tiers.test.js PASS');

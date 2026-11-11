@@ -125,6 +125,39 @@ function user(id, companyId, active = true) {
   );
   process.env.STRIPE_PRICE_TIER_3 = 'price_test_team3';
 
+  // 8. Granting free access to a canceled company: status -> free, the
+  // previous status is kept, and the grant is logged. A later Stripe
+  // event cannot clobber the grant or change the tier.
+  reset([company(8, 'solo')], [sub(8, 'canceled', { stripe_customer_id: 'cus_test_8', stripe_subscription_id: 'sub_test_8' })], [user(1, 8)]);
+  const freed = await billing.grantFreeAccess(8);
+  assert.strictEqual(freed.status, 'free');
+  assert.strictEqual(state.subs[0].free_prev_status, 'canceled');
+  assert.ok(state.events.some((e) => e.type === 'free_access_granted'));
+  await billing.applyStripeEvent({
+    type: 'customer.subscription.updated',
+    data: { object: { id: 'sub_test_8', customer: 'cus_test_8', status: 'active', items: { data: [{ price: { id: 'price_test_team3' } }] } } },
+  });
+  assert.strictEqual(state.subs[0].status, 'free');
+  assert.strictEqual(state.companies[0].plan_tier, 'solo');
+
+  // 9. Removing free access restores the previous status exactly.
+  const restored = await billing.removeFreeAccess(8);
+  assert.strictEqual(restored.status, 'canceled');
+  assert.strictEqual(state.subs[0].free_prev_status, null);
+  assert.ok(state.events.some((e) => e.type === 'free_access_removed'));
+
+  // 10. Free companies cannot switch plans.
+  reset([company(9, 'solo')], [sub(9, 'free')], [user(1, 9)]);
+  await assert.rejects(() => billing.changePlan(9, 'team3'), /free access/);
+
+  // 11. Granting free access twice is a no-op the second time.
+  reset([company(10, 'solo')], [sub(10, 'trialing')], [user(1, 10)]);
+  await billing.grantFreeAccess(10);
+  await billing.grantFreeAccess(10);
+  assert.strictEqual(state.subs[0].status, 'free');
+  assert.strictEqual(state.subs[0].free_prev_status, 'trialing');
+  assert.strictEqual(state.events.filter((e) => e.type === 'free_access_granted').length, 1);
+
   console.log('billing-tiers.test.js PASS');
 })().catch((e) => {
   console.error('billing-tiers.test.js FAIL:', e);
