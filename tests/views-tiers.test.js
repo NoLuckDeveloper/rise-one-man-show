@@ -70,15 +70,19 @@ const freeUsers = views.usersPage({ user, sub: freeSub, company, flash: null, us
 assert.ok(freeUsers.includes('unlimited seats (free access)'), 'users missing unlimited seats copy');
 assert.ok(!freeUsers.includes('Seat limit reached'), 'users still warns at cap for a free company');
 
-// Price book: the page lists saved parts with edit/delete actions, and the
-// job report offers a picker that carries the part's cost.
+// Price book: saved parts read as a list with an Edit link; only the part
+// being edited shows the edit/delete form. The job report offers a picker
+// that carries the part's cost.
 const bookItems = [{ id: 7, name: 'Panic bar', part_number: '98E', description: 'Von Duprin exit device', cost_cents: 4599 }];
 const bookPage = views.priceBookPage({ user, sub, company, flash: null, items: bookItems, query: '' });
 assert.ok(bookPage.includes('Price Book'), 'price book missing title');
 assert.ok(bookPage.includes('Panic bar'), 'price book missing item name');
 assert.ok(bookPage.includes('98E'), 'price book missing part number');
-assert.ok(bookPage.includes('action="/app/price-book/7/edit"'), 'price book missing edit action');
-assert.ok(bookPage.includes('action="/app/price-book/7/delete"'), 'price book missing delete action');
+assert.ok(bookPage.includes('/app/price-book?edit=7'), 'price book missing edit link');
+assert.ok(!bookPage.includes('action="/app/price-book/7/edit"'), 'price book shows the edit form without Edit');
+const bookEditing = views.priceBookPage({ user, sub, company, flash: null, items: bookItems, query: '', editId: 7 });
+assert.ok(bookEditing.includes('action="/app/price-book/7/edit"'), 'price book edit mode missing edit action');
+assert.ok(bookEditing.includes('formaction="/app/price-book/7/delete"'), 'price book edit mode missing delete action');
 
 const reportHtml = views.reportPage({ user, sub, company, flash: null, call: { id: 3 }, report: null, chainHours: 0, chainMiles: 0, print: false, priceBook: bookItems });
 assert.ok(reportHtml.includes('id="price-book-pick"'), 'report missing price book picker');
