@@ -82,12 +82,15 @@ function subBanner(user, sub) {
 
 function layout({ title, user, sub, company, flash, body, print, hideBrand }) {
   const nav = user
-    ? `<nav class="tabs">
+    ? `<details class="nav-menu">
+        <summary>☰ ${esc(title)}</summary>
+        <div class="menu-links">
         ${user.role === 'platform'
           ? '<a href="/platform">Platform</a>'
           : `<a href="/app">Schedule</a>
              <a href="/app/completed">Completed</a>
              <a href="/app/customers">Customers</a>
+             ${user.role !== 'tech' ? '<a href="/app/proposals">Proposals</a>' : ''}
              ${user.role !== 'tech' ? '<a href="/app/price-book">Price Book</a>' : ''}
              <a href="/app/log">Log &amp; Report</a>
              ${user.role !== 'tech' ? '<a href="/app/users">Users</a>' : ''}
@@ -95,7 +98,8 @@ function layout({ title, user, sub, company, flash, body, print, hideBrand }) {
              ${user.role === 'owner' ? '<a href="/app/billing">Billing</a>' : ''}
              <a href="/platform">Platform</a>`}
         <form method="post" action="/logout" class="logout"><button type="submit">Log out</button></form>
-      </nav>`
+        </div>
+      </details>`
     : '';
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -419,6 +423,28 @@ function jobPage({ user, sub, company, flash, call, report, openPunch, openTrip,
 }
 
 // --- Proposals (owner/admin in-app; public page below) -----------------------
+
+function proposalsPage({ user, sub, company, flash, proposals }) {
+  const rows = (proposals || []).map(({ proposal: p, call, totals }) => `
+    <div class="line proposal-line">
+      <div>
+        <strong>${esc(call.customer_name)}</strong> — ${esc(call.description || 'Job')}
+        <div><strong>${money(totals ? totals.totalCents : 0)}</strong> ${proposalStatusPill(p.status)}
+        <span class="muted">${p.display_mode === 'total_only' ? '· Total only' : '· Itemized'}${p.sent_at ? ' · Sent ' + new Date(p.sent_at).toLocaleDateString() : ''}</span></div>
+        ${p.status === 'changes_requested' && p.customer_decision_note ? `<div><strong>Customer asked for changes:</strong> ${esc(p.customer_decision_note)}</div>` : ''}
+        ${p.status === 'approved' && p.signed_at ? `<div class="muted">Signed ${esc(new Date(p.signed_at).toLocaleString())}</div>` : ''}
+      </div>
+      <div class="row-actions">
+        <a class="btn small" href="/app/calls/${call.id}/proposals/${p.id}">View</a>
+        <a class="btn small" href="/app/calls/${call.id}">Open job</a>
+      </div>
+    </div>`).join('');
+  const body = `
+  <section class="card"><h2>Proposals sent</h2>
+    ${rows || '<p class="muted">No proposals sent yet.</p>'}
+  </section>`;
+  return layout({ title: 'Proposals', user, sub, company, flash, body });
+}
 
 function proposalFormPage({ user, sub, company, flash, call, proposal, settings }) {
   const p = proposal || {};
@@ -1080,5 +1106,5 @@ module.exports = {
   statusPill, callCard, jobPage, reportPage, invoicePage, completedPage,
   customersPage, customerDetailPage, logPage, settingsPage, usersPage,
   billingPage, platformPage, payPage, profileBlock, proposalStatusPill, priceBookPage,
-  signatureBlock, proposalFormPage, proposalDetailPage, proposalPage,
+  signatureBlock, proposalFormPage, proposalDetailPage, proposalPage, proposalsPage,
 };
