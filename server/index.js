@@ -775,6 +775,21 @@ app.post('/app/calls/:id/email-invoice', auth.requireRole('owner', 'admin'), loa
 // Create/edit/send a proposal for a call. Techs get 403 from requireRole;
 // loadCall 404s for calls outside a tech's visibility, so neither path can
 // reach another company's (or another tech's) proposals.
+// All sent proposals, newest first — the quick cross-call view of what
+// went out and where each one stands. Drafts stay on their call page.
+app.get('/app/proposals', auth.requireRole('owner', 'admin'), async (req, res) => {
+  const { rows } = await db.q(`
+    SELECT p.*, c.customer_name, c.description AS call_description
+    FROM proposals p JOIN calls c ON c.id = p.call_id
+    WHERE p.company_id = $1 AND p.status <> 'draft'
+    ORDER BY p.sent_at DESC NULLS LAST, p.created_at DESC`, [req.companyId]);
+  const proposals = rows.map((r) => ({
+    proposal: r,
+    call: { id: r.call_id, customer_name: r.customer_name, description: r.call_description },
+    totals: proposalTotals(r, req.settings),
+  }));
+  res.send(views.proposalsPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), proposals }));
+});
 app.get('/app/calls/:id/proposals/new', auth.requireRole('owner', 'admin'), loadCall, async (req, res) => {
   res.send(views.proposalFormPage({ user: req.user, sub: req.sub, company: req.company, flash: flashFrom(req), call: req.call, proposal: null, settings: req.settings }));
 });
